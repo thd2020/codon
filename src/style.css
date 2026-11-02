@@ -1,0 +1,32 @@
+html, body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: #020b16;
+  color: #f2efe9;
+  font-family: "Avenir Next", "Futura", "Century Gothic", "Helvetica Neue", "DejaVu Sans", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+#app, canvas { display: block; }
+.labels { position: fixed; inset: 0; pointer-events: none; }
+
+/* Tags pinned to the cell: a dot on the part, a hairline lead, then the name. */
+.tag { width: 0; height: 0; transition: opacity 0.2s; }
+.tag .dot {
+  position: absolute; left: -3px; top: -3px; width: 6px; height: 6px; border-radius: 50%;
+  background: #86dcc6; box-shadow: 0 0 8px #86dcc6aa;
+}
+.tag .lead { position: absolute; left: 0; top: 0; height: 1px; background: #86dcc6b0; transform-origin: 0 0; }
+.tag .txt { position: absolute; transform: translateY(-50%); white-space: nowrap; display: flex; flex-direction: column; gap: 2px; text-shadow: 0 1px 6px #020b16; }
+.tag b { font-weight: 600; font-size: 13px; letter-spacing: 0.04em; }
+.tag i { font-style: normal; font-size: 11px; color: #f2efe9a8; letter-spacing: 0.02em; }
+.tag-l .txt { align-items: flex-end; }
+.tag-env .dot { background: transparent; border: 1px solid #f2efe9aa; box-shadow: none; }
+.tag-env .lead { display: none; }
+
+/* Readouts on the vitals ring. */
+.readout { font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: #f2efe9cc; white-space: nowrap; text-shadow: 0 1px 6px #020b16; }
+.readout b { font-weight: 600; color: #86dcc6; margin-right: 4px; }
+.readout.right b { color: #f2efe9; }
+.readout.scale { text-transform: none; letter-spacing: 0.06em; }
+.readout.scale span { opacity: 0.5; margin: 0 4px; }
