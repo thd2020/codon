@@ -13,6 +13,17 @@ npm run dev        # http://localhost:5173
 
 `npm run build` writes a static site to `dist/`.
 
+## Deploying
+
+The game runs on a Cloudflare Worker named `codon`, which serves `dist/` as static assets (`wrangler.jsonc`). `.github/workflows/deploy.yml` builds and deploys it on every push to the repository's default branch. Until the two secrets below exist, the workflow skips the deploy and says so in its log.
+
+1. In the Cloudflare dashboard, open **My Profile → API Tokens → Create Token** and start from the **Edit Cloudflare Workers** template, limited to your account. The token made for holarky-account works too.
+2. Copy your **Account ID** from the dashboard's Workers & Pages overview.
+3. In GitHub, open **this repository → Settings → Secrets and variables → Actions → New repository secret** and add `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`.
+4. Run **Actions → Deploy Codon → Run workflow**, or push. The log ends with the address, `https://codon.<your-subdomain>.workers.dev`.
+
+To deploy from your own machine instead: `npx wrangler login`, then `npm run deploy`.
+
 ## Controls
 
 | Key | Does |
