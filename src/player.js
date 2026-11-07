@@ -4,6 +4,8 @@ import * as THREE from 'three';
 // around 0.00001) that there is no coasting. Speed follows motor thrust almost instantly, and
 // the cell body counter-rotates against its spinning flagella.
 // Run: bundled flagella push the cell forward. Tumble: flagella splay and the cell flips.
+// The motors run on the proton motive force, so how hard the cell can push is set each frame by
+// the metabolism (motorPower), not by ATP.
 
 const Z = new THREE.Vector3(0, 0, 1);
 const UP = new THREE.Vector3(0, 1, 0);
@@ -18,8 +20,8 @@ export class Player {
     this.speed = 0;
     this.thrust = 0;
     this.bundle = 0.6;
-    this.atp = 0.92;
-    this.envelope = 1;
+    this.motorPower = 1; // 0..1, from the metabolism's proton motive force
+    this.requested = 0; // thrust asked of the motors this frame, before motorPower
     this.maxSpeed = 7; // µm/s, a relaxed E. coli pace
     this.tumble = 0;
     this.tumbleAxis = new THREE.Vector3(1, 0, 0);
@@ -27,7 +29,6 @@ export class Player {
     this.idle = 0;
     this.started = false;
     this.inspect = false;
-    this.listeners = [];
 
     addEventListener('keydown', (e) => {
       if (e.code === 'Tab') {
@@ -86,7 +87,8 @@ export class Player {
       thrustTarget = THREE.MathUtils.smoothstep(fwd.dot(_m), -0.1, 0.85);
       bundleTarget = 1;
     }
-    if (this.atp < 0.08) thrustTarget *= 0.35;
+    this.requested = thrustTarget;
+    thrustTarget *= this.motorPower;
 
     this.thrust += (thrustTarget - this.thrust) * (1 - Math.exp(-dt / 0.12));
     this.bundle += (bundleTarget - this.bundle) * (1 - Math.exp(-dt / 0.18));
@@ -98,20 +100,19 @@ export class Player {
     g.position.y += (Math.random() - 0.5) * 0.06 * dt;
     g.quaternion.premultiply(_q.setFromAxisAngle(_v.randomDirection(), (Math.random() - 0.5) * 0.06 * dt));
 
-    // Roll: the player's Q/E, plus the body's counter-rotation against the motors.
-    const roll = (this.key('KeyE') - this.key('KeyQ')) * 1.8 - this.thrust * 0.9;
+    // Roll: the player's Q/E, plus the body's counter-rotation against the motors. On a run the
+    // filaments turn counterclockwise seen from behind, so torque balance turns the body clockwise
+    // (a positive angle about +Z).
+    const roll = (this.key('KeyE') - this.key('KeyQ')) * 1.8 + this.thrust * 0.9;
     g.quaternion.multiply(_q.setFromAxisAngle(Z, roll * dt));
     g.quaternion.normalize();
 
-    // Energy: swimming spends ATP, resting regenerates it from glucose in the water.
-    this.atp = THREE.MathUtils.clamp(this.atp + (0.035 * (1 - this.thrust) - 0.05 * this.thrust) * dt, 0, 1);
     this.idle = this.thrust < 0.05 && this.tumble <= 0 ? this.idle + dt : 0;
 
     return {
       thrust: this.thrust,
       bundle: this.bundle,
       omega: 6 + this.thrust * 26 + (this.tumble > 0 ? -18 : 0),
-      squish: this.thrust,
     };
   }
 

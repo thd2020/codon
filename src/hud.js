@@ -185,7 +185,7 @@ export class Hud {
     camera.position.copy(target).addScaledVector(off.normalize(), d + (goal - d) * (1 - Math.exp(-dt / 0.35)));
   }
 
-  update(dt, camera, player) {
+  update(dt, camera, player, mState = {}, fState = {}) {
     const g = this.cell.group;
     this.ring.position.copy(g.position);
     this.ring.quaternion.copy(camera.quaternion);
@@ -198,8 +198,8 @@ export class Hud {
     this.vis += (targetVis - this.vis) * (1 - Math.exp(-dt / 0.4));
     this.inspectVis += ((player.inspect ? 1 : 0) - this.inspectVis) * (1 - Math.exp(-dt / 0.25));
 
-    this.atpArc.material.uniforms.uValue.value = player.atp;
-    this.envArc.material.uniforms.uValue.value = player.envelope;
+    this.atpArc.material.uniforms.uValue.value = mState.atp ?? 0;
+    this.envArc.material.uniforms.uValue.value = mState.pmfFraction ?? 0;
     for (const o of [this.atpArc, this.envArc]) o.material.uniforms.uOpacity.value = this.vis;
     this.ticks.material.opacity = 0.22 * this.vis;
     const near = THREE.MathUtils.smoothstep(camera.position.distanceTo(this.plaque.position), 3, 8);
@@ -207,8 +207,8 @@ export class Hud {
     this.plaque.visible = this.plaque.material.opacity > 0.01;
     this.bar.material.opacity = 0.7 * this.vis;
 
-    this.atpLabel.element.innerHTML = `<b>ATP</b> ${(player.atp * 100).toFixed(0)}%`;
-    this.envLabel.element.innerHTML = `<b>Envelope</b> ${(player.envelope * 100).toFixed(0)}%`;
+    this.atpLabel.element.innerHTML = `<b>ATP</b> ${((mState.atp ?? 0) * 100).toFixed(0)}%`;
+    this.envLabel.element.innerHTML = `<b>PMF</b> ${Math.round(mState.pmf ?? 0)} mV`;
     this.barLabel.element.innerHTML = `1 µm <span>·</span> ${player.speed.toFixed(1)} µm/s`;
     for (const l of [this.atpLabel, this.envLabel, this.barLabel]) l.element.style.opacity = this.vis.toFixed(3);
 

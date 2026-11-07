@@ -1,19 +1,18 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
-import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
-import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
-import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
-import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { CSS2DRenderer } from 'three/addons/renderers/CSS2DRenderer.js';
 import { clock } from './materials.js';
-import { Water } from './water.js';
+import { CellPass } from './cellpass.js';
+import { Water, addLights } from './water.js';
 import { Bacterium } from './bacterium.js';
 import { Neighbours } from './neighbours.js';
 import { Player } from './player.js';
+import { Metabolism } from './metabolism.js';
+import { Feeding } from './feeding.js';
 import { Hud } from './hud.js';
-import { LensShader } from './lens.js';
-import { WATER } from './palette.js';
+import { composeLook } from './lens.js';
+import { ORGANELLE } from './palette.js';
 import './style.css';
 
 const params = new URLSearchParams(location.search);
@@ -22,8 +21,6 @@ const app = document.getElementById('app');
 const renderer = new THREE.WebGLRenderer({ powerPreference: 'high-performance' });
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 renderer.setSize(innerWidth, innerHeight);
-renderer.toneMapping = THREE.AgXToneMapping;
-renderer.toneMappingExposure = 1.15;
 app.appendChild(renderer.domElement);
 
 const labels = new CSS2DRenderer();
@@ -37,21 +34,26 @@ camera.position.set(5.6, 1.8, 2.1);
 
 const water = new Water(scene);
 scene.environment = water.environment(renderer);
-scene.environmentIntensity = 0.9;
+addLights(scene);
 
-scene.add(new THREE.HemisphereLight(0xcfeff2, 0x061a2a, 1.4));
-const sun = new THREE.DirectionalLight(WATER.sun, 1.8);
-sun.position.set(3, 10, 2);
-scene.add(sun);
-const rim = new THREE.DirectionalLight(0x6fb8ff, 1.2);
-rim.position.set(-4, -2, -6);
-scene.add(rim);
+// Every cell (the hero and its neighbours) is drawn as one volume by this pass, lit and fogged
+// with the same light and fog as the water.
+const cellPass = new CellPass(scene, camera);
+cellPass.setColors({
+  dna: ORGANELLE.dna,
+  plasmid: ORGANELLE.plasmid,
+  glycogen: ORGANELLE.glycogen,
+  polyP: ORGANELLE.polyphosphate,
+  receptor: ORGANELLE.receptor,
+  vesicle: ORGANELLE.vesicle,
+});
 
 const hero = new Bacterium({ hero: true, seed: 42 });
 hero.group.rotation.y = -0.35;
 scene.add(hero.group);
+cellPass.add(hero);
 
-const neighbours = new Neighbours(scene, hero, camera);
+const neighbours = new Neighbours(scene, hero, camera, cellPass);
 
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
@@ -68,18 +70,21 @@ const player = new Player(hero, camera, controls);
 player.inspect = params.has('inspect');
 // ?keys=KeyW,KeyD holds keys from the start, for testing without a keyboard.
 for (const k of (params.get('keys') || '').split(',').filter(Boolean)) player.keys.add(k);
-const hud = new Hud(scene, hero, `${import.meta.env.BASE_URL}brand/cell-icon.svg`);
+
+const metabolism = new Metabolism(hero);
+const feeding = new Feeding(scene, hero, metabolism, camera);
+const hud = new Hud(scene, hero, `${import.meta.env.BASE_URL}brand/cell-icon.svg`, { metabolism, feeding });
 hud.placePlaque(camera, controls.target);
 
-const rtSize = new THREE.Vector2();
-renderer.getDrawingBufferSize(rtSize);
-const composer = new EffectComposer(renderer, new THREE.WebGLRenderTarget(rtSize.x, rtSize.y, { type: THREE.HalfFloatType, samples: 4 }));
-composer.addPass(new RenderPass(scene, camera));
-const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.28, 0.6, 0.9);
-composer.addPass(bloom);
-const lens = new ShaderPass(LensShader);
-composer.addPass(lens);
-composer.addPass(new OutputPass());
+// The scene renders into a target that keeps its depth, so CellPass can stop each ray at the
+// first opaque thing (a bead, a flagellum, a neighbour's meshes) and veil it correctly.
+const size = new THREE.Vector2();
+renderer.getDrawingBufferSize(size);
+const target = new THREE.WebGLRenderTarget(size.x, size.y, { type: THREE.HalfFloatType, samples: 4, depthTexture: new THREE.DepthTexture(size.x, size.y) });
+const composer = new EffectComposer(renderer, target);
+// scene -> cells -> water in front of the cells -> bloom -> tone mapping -> lens grade
+const look = composeLook(composer, renderer, { scene, camera, cellPass, water });
+const lens = look.lens;
 
 function resize() {
   camera.aspect = innerWidth / innerHeight;
@@ -87,9 +92,9 @@ function resize() {
   renderer.setSize(innerWidth, innerHeight);
   composer.setSize(innerWidth, innerHeight);
   labels.setSize(innerWidth, innerHeight);
-  renderer.getDrawingBufferSize(rtSize);
-  lens.uniforms.uRes.value = [rtSize.x, rtSize.y];
-  water.resize(rtSize.y, camera.fov);
+  renderer.getDrawingBufferSize(size);
+  cellPass.setSize(size.x, size.y);
+  water.resize(size.y, camera.fov);
 }
 addEventListener('resize', resize);
 resize();
@@ -107,21 +112,24 @@ function frame(now) {
   const dt = real * (player.inspect ? 0.25 : 1);
   t += dt;
   clock.uTime.value = t;
-  lens.uniforms.uTime.value = t;
+  if (lens.uniforms.uTime) lens.uniforms.uTime.value = t;
 
   const drive = player.update(dt);
+  metabolism.update(dt, { thrust: player.requested, oxygen: feeding.state.oxygen });
+  player.motorPower = metabolism.state.motorPower;
   hero.update(dt, drive);
+  feeding.update(dt, { keys: player.keys, inspect: player.inspect });
   neighbours.update(dt);
   player.follow(real);
   hud.zoom(real, camera, controls.target, player.inspect);
   controls.update();
 
   water.update(camera, camera.position.distanceTo(hero.group.position));
-  hud.update(real, camera, player);
+  hud.update(real, camera, player, metabolism.state, feeding.state);
 
   composer.render();
   labels.render(scene, camera);
 }
 renderer.setAnimationLoop(frame);
 
-window.codon = { scene, camera, hero, player, controls };
+window.codon = { scene, camera, hero, player, controls, metabolism, feeding, cellPass, renderer };
