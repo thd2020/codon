@@ -66,9 +66,15 @@ export class Neighbours {
       cellPass.add(b);
       this.rods.push(b);
     }
+    // Cocci can't swim, so one that started in the first view (the camera looking at the hero) would
+    // stay parked there, over the title or the cell: they start outside it.
+    _p.copy(hero.group.position).sub(camera.position).normalize();
     for (let i = 0; i < cocci; i++) {
       const c = new Coccus({ seed: 200 + i, count: 2 });
-      this.place(c.group, 8, 22);
+      for (let k = 0; k < 40; k++) {
+        this.place(c.group, 8, 22);
+        if (away.copy(c.group.position).sub(camera.position).normalize().dot(_p) < Math.cos(0.9)) break;
+      }
       c.spin = new THREE.Vector3(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).multiplyScalar(0.2);
       scene.add(c.group);
       for (const d of c.cells) cellPass.add(d);
