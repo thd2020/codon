@@ -1171,6 +1171,7 @@ export class Feeding {
       // birth: the film takes over from the bubble's, which shrinks away inside it
       v.membrane = Math.min(1, tt / T_HAND);
       if (tt < T_HAND) {
+        // down past nothing, until even its inner film (0.08 µm outside its outer one) is gone
         pinch = 1;
         cup = rc + (-0.1 - rc) * ease(tt / T_HAND);
       } else {
