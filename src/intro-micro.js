@@ -225,8 +225,9 @@ const pollenFragment = /* glsl */ `
     float sd = dot(n, uSunDir);
     float lit = smoothstep(-0.2, 0.45, sd);
     vec3 alb = mix(uLumen * (0.8 + 0.2 * (1.0 - lumen)), uMurus, ridge);
-    // day side warm in the sun, night side in the water's cool light
-    vec3 col = alb * uSun * (0.15 + 0.85 * lit) * 0.9 + alb * envDome(n) * (0.42 - 0.18 * lit);
+    // day side warm in the sun, night side in the water's cool light (held soft: a pale grain in
+    // pale water, not a lamp)
+    vec3 col = alb * uSun * (0.15 + 0.85 * lit) * 0.72 + alb * envDome(n) * (0.5 - 0.2 * lit);
     float c = clamp(dot(n, v), 0.0, 1.0);
     // limb haze: the water round it, thickest at the edge
     col = mix(col, envDome(-v) * 1.03, 0.6 * pow(1.0 - c, 2.5));
@@ -687,8 +688,8 @@ export class MicroIntro {
     mk(this.inView(1.9, 70, 21, 8), u1.clone().multiplyScalar(0.8).addScaledVector(r1, -0.35).addScaledVector(f1, -0.5), 1000, 8, 5);
     // The pollen grain: a planet we pass on the way down, low on the left.
     this.pollen = new THREE.Mesh(new THREE.SphereGeometry(9, 96, 64), propMaterial(pollenFragment, water.dome, {
-      uLumen: { value: sceneColor(0xe8b866) },
-      uMurus: { value: sceneColor(0xfaefcc) },
+      uLumen: { value: sceneColor(0xe4c99a) },
+      uMurus: { value: sceneColor(0xf8f1df) },
       uFade: { value: 0 },
     }));
     this.pollen.position.copy(this.inView(1.1, 95, -24, -12));
@@ -846,12 +847,17 @@ export class MicroIntro {
     // Just under the skin the depth still holds the skin's own light: the Garden's last frame is a
     // pale mint glow, so the descent comes out of the flash at that tone and deepens into the celadon
     // as it sinks (no dark frame waiting behind the flash).
+    // Even there the depth below is a shade deeper than the light just under the skin (the abyss at
+    // the bottom of the frame against the deep at its top), so the first frame out of the flash has
+    // a way down in it instead of a flat milky fill.
     const leaf = (1 - s) * (1 - smooth(4, 7.5, t));
     if (leaf > 0) {
       const skin = 1 - smooth(0.3, 2.6, t);
-      drop.deep = lerpHex(drop.deep, lerpHex(0x8cb2a6, 0xd2ece0, skin), (0.75 + 0.2 * skin) * leaf);
-      drop.abyss = lerpHex(drop.abyss, lerpHex(0x6f948a, 0xc6e4d6, skin), (0.8 + 0.15 * skin) * leaf);
-      drop.haze = lerpHex(drop.haze, 0xeeeff6, 0.5 * leaf);
+      drop.deep = lerpHex(drop.deep, lerpHex(0x8cb2a6, 0xd4ede3, skin), (0.75 + 0.2 * skin) * leaf);
+      drop.abyss = lerpHex(drop.abyss, lerpHex(0x6f948a, 0xa9cdc1, skin), (0.8 + 0.15 * skin) * leaf);
+      // The haze band just below level takes the gradient's own tone, so as the view levels out the
+      // pale water above fades into the celadon below with no lilac shelf (and no line under it).
+      drop.haze = lerpHex(drop.haze, lerpHex(drop.horizon, drop.deep, 0.2), leaf);
       drop.meniscus = lerpHex(drop.meniscus, 0xeaf0f4, 0.5 * leaf);
     }
     applyDrop(drop, { water: this.water, cellPass: this.cellPass, lens: this.look?.lens });

@@ -1526,6 +1526,33 @@ const dofGatherFragment = /* glsl */ `
   }
 `;
 
+// The gather's 48 samples lie on one fixed spiral, about R/4 apart, so a hard edge inside a wide
+// circle comes out as faint copies of itself a pixel or two apart: the far margin against the yard
+// a stack of parallel torn-paper edges, a far bead a dotted disc. A small Gaussian after it (sigma
+// R/4, in two passes) melts the copies into one soft edge and widens the blur by only a few per cent.
+// Only blurred neighbours of a like circle count, so a sharp bead never spreads into the blur round
+// it, and a pixel in focus is left as it is.
+const dofPostFragment = /* glsl */ `
+  uniform sampler2D tSrc; uniform vec2 uDir; varying vec2 vUv;
+  void main() {
+    vec4 c = texture2D(tSrc, vUv);
+    float s = min(c.a * 0.125, 3.0); // tap spacing, sigma / 2
+    if (s < 0.15) { gl_FragColor = c; return; }
+    vec3 acc = c.rgb;
+    float W = 1.0;
+    for (int i = 1; i <= 4; i++) {
+      float g = exp(-0.125 * float(i * i));
+      vec4 a = texture2D(tSrc, vUv + uDir * s * float(i));
+      vec4 b = texture2D(tSrc, vUv - uDir * s * float(i));
+      float wa = g * smoothstep(0.6, 1.6, a.a) * smoothstep(0.15, 0.4, a.a / c.a);
+      float wb = g * smoothstep(0.6, 1.6, b.a) * smoothstep(0.15, 0.4, b.a / c.a);
+      acc += a.rgb * wa + b.rgb * wb;
+      W += wa + wb;
+    }
+    gl_FragColor = vec4(acc / W, c.a);
+  }
+`;
+
 // The smaller copies for wide circles leave out what is in focus: a sharp bead never spreads, so
 // averaging it into a wide texel would only invent a halo round it (and a false depth between).
 const dofDownFragment = /* glsl */ `
@@ -1557,6 +1584,7 @@ class DepthOfField {
     this.max = q(dofMaxFragment, { tSrc: { value: null }, uStep: { value: new THREE.Vector2() }, uTexel: { value: new THREE.Vector2() }, uK: { value: 1 }, uFirst: { value: 1 } });
     this.gather = q(dofGatherFragment, { tPrep: { value: null }, tPrep4: { value: null }, tPrep8: { value: null }, tNearMax: { value: null }, uTexel: { value: new THREE.Vector2() }, uMaxR: { value: 16 } });
     this.down = q(dofDownFragment, { tSrc: { value: null }, uTexel: { value: new THREE.Vector2() } });
+    this.post = q(dofPostFragment, { tSrc: { value: null }, uDir: { value: new THREE.Vector2() } });
     this.quad = new FullScreenQuad(this.prep);
     this.targets = {};
   }
@@ -1627,8 +1655,17 @@ class DepthOfField {
     g.tNearMax.value = mv.texture;
     g.uTexel.value.set(1 / hw, 1 / hh);
     g.uMaxR.value = maxR;
-    const out = this.target('gather', hw, hh);
-    this.pass(renderer, this.gather, out);
+    const gathered = this.target('gather', hw, hh);
+    this.pass(renderer, this.gather, gathered);
+    const o = this.post.uniforms;
+    o.tSrc.value = gathered.texture;
+    o.uDir.value.set(1 / hw, 0);
+    const across = this.target('postH', hw, hh);
+    this.pass(renderer, this.post, across);
+    o.tSrc.value = across.texture;
+    o.uDir.value.set(0, 1 / hh);
+    const out = this.target('post', hw, hh);
+    this.pass(renderer, this.post, out);
     return out.texture;
   }
 
@@ -1638,6 +1675,7 @@ class DepthOfField {
     this.max.dispose();
     this.gather.dispose();
     this.down.dispose();
+    this.post.dispose();
     this.quad.dispose();
   }
 }
@@ -2363,7 +2401,7 @@ export class Garden {
     renderer.compile(this.farScene, this.camera);
     renderer.compile(this.nearScene, this.camera);
     const p = this.pass;
-    const mats = [p.material, p.dof.prep, p.dof.max, p.dof.gather, p.dof.down, p.blur.down, p.blur.gauss];
+    const mats = [p.material, p.dof.prep, p.dof.max, p.dof.gather, p.dof.down, p.dof.post, p.blur.down, p.blur.gauss];
     const scene = new THREE.Scene();
     const geo = new THREE.PlaneGeometry(2, 2);
     for (const m of mats) scene.add(new THREE.Mesh(geo, m));

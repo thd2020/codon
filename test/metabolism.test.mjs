@@ -425,6 +425,34 @@ console.log('\n# calibration');
   check('motor power curve: 0 at -35 mV, 1 at -125 mV', motorPowerAt(-35) + (1 - motorPowerAt(-125)), 0);
 }
 
+console.log('\n# the TCA cycle is drawn once');
+{
+  // CellPass draws its own stream of beads round the loop unless tca.stream says not to. The
+  // opening does not run the route and keeps that stream; once the route runs it fades out, and
+  // the cycle's intermediates are the counted beads alone.
+  const { h, m } = fresh();
+  check('before the route runs: CellPass stream', h.volume.tca.stream ?? 1, 1);
+  for (let k = 0; k < 2 / DT; k++) m.update(DT, { oxygen: 1 });
+  check('once it runs: CellPass stream', h.volume.tca.stream, 0);
+}
+
+console.log('\n# gold means ATP: the complexes keep off the beads’ colours');
+{
+  const { h, m } = fresh();
+  const hsl = (c) => c.getHSL({}, THREE.SRGBColorSpace);
+  const apart = (a, b) => {
+    const d = Math.abs(hsl(a).h - hsl(b).h) * 360;
+    return Math.min(d, 360 - d);
+  };
+  const beads = m.base.filter((c) => hsl(c).s > 0.3); // greys have no hue to clash with
+  const atp = new THREE.Color(m.legend.find((l) => l.key === 'atp').color);
+  for (const key of ['pts', 'atpSynthase']) {
+    const c = h.complexes.find((x) => x.sites === h.sites[key]).vivid[0];
+    between(`${key}: hue from ATP's gold (°)`, apart(c, atp), 45, 180);
+    between(`${key}: hue from the nearest bead colour (°)`, Math.min(...beads.map((b) => apart(c, b))), 25, 180);
+  }
+}
+
 void hero;
 void CONFIG;
 console.log(failed ? `\n${failed} FAILED` : '\nall passed');

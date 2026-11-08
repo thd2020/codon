@@ -1698,9 +1698,11 @@ export class Metabolism {
       vol.glycolysisActivity = this.activity.glycolysis;
       if (vol.tca) {
         // The cycle's intermediates are this module's counted beads. CellPass's own procedural
-        // stream of beads round the loop would draw them twice: `stream = 0` asks it not to, and
-        // until it reads that, tca.activity (which also speeds and brightens that stream) stays low.
-        vol.tca.stream = 0;
+        // stream of beads round the loop would draw them twice, so once the route runs that stream
+        // (tca.stream, 0..1) fades out over a second and a half. Until then (the opening, which does
+        // not run the route) it is left as it is, so nothing pops at the hand-over. tca.activity only
+        // speeds and brightens that stream; it is kept low, as the opening has always shown it.
+        if (dt > 0) vol.tca.stream = Math.max((vol.tca.stream ?? 1) - dt / 1.5, 0);
         vol.tca.activity = 0.3 * this.activity.tca;
       }
       vol.protonGlow = 0.1 + 0.95 * frac * frac;

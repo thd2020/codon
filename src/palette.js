@@ -20,9 +20,12 @@ export const ORGANELLE = {
   complexI: 0xf0644f, // NADH dehydrogenase I
   sdh: 0xf59a2c, // succinate dehydrogenase (complex II)
   bo3: 0xd9325f, // cytochrome bo3 oxidase
-  atpSynthase: 0xe8b22a,
+  // ATP synthase and the glucose transporters are kept off ATP's gold (gold means ATP, the bead)
+  // and off every bead colour of the energy route: an orchid violet round a teal rotor, and a
+  // leaf green.
+  atpSynthase: 0xb44fc8,
   atpRotor: 0x1fb595,
-  pts: 0xe6c341, // glucose transporter (PTS)
+  pts: 0x6fc84a, // glucose transporter (PTS)
   motor: 0x1fb595,
   flagellum: 0xa9d6c4,
   vesicle: 0xf59ac4,

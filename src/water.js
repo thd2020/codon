@@ -100,7 +100,9 @@ const domeFragment = /* glsl */ `
   }
   // The band's profile S(x) = smoothstep(0, e, x) - smoothstep(w - 150, w, x), integrated. The edge
   // e is widened with distance (gBandE), so seen edge-on from far off it is a soft gradient, never
-  // a line.
+  // a line. Distance here is both the camera's from the edge and the scale of the view (the reach):
+  // high above the band, near its plane, the rays that just reach it before the reach ends would
+  // otherwise turn its edge into a vertical tone step across the frame.
   float gBandE;
   float bandInt(float x) {
     return rampInt(x, -0.5 * (gBandE - uFrontP.z), uFrontP.z + 0.5 * (gBandE - uFrontP.z)) - rampInt(x, uFrontP.y - 150.0, uFrontP.y);
@@ -120,7 +122,7 @@ const domeFragment = /* glsl */ `
     float x0 = dot(o, uFrontN) - uFrontP.x + bandWarp(o);
     float x1 = dot(o + d * T, uFrontN) - uFrontP.x + bandWarp(o + d * T);
     float slope = (x1 - x0) / T;
-    gBandE = max(uFrontP.z, 0.08 * abs(x0));
+    gBandE = max(uFrontP.z, 0.08 * max(abs(x0), T));
     float L = abs(slope) > 1e-4 ? (bandInt(x1) - bandInt(x0)) / slope : bandAt(x0) * T;
     // Layers: the integral of sin along the ray, so they show where the ray runs along them (where
     // you see the band edge-on) and average away where it cuts across them, like real schlieren.

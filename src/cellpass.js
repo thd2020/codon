@@ -93,6 +93,7 @@ const fragmentShader = /* glsl */ `
   uniform int uGranuleCount;
   uniform vec4 uTca;               // loop centre, radius
   uniform vec4 uTcaAxis;           // axis, activity
+  uniform float uTcaStream;        // how much of the loop's own stream of beads is drawn (0..1)
   uniform vec4 uTcaE[NTCA * 4];    // the enzymes' subunits: centre, radius (0 = none); 4 per enzyme
   uniform vec4 uGlyco;             // centre, activity
   uniform float uGlycoBound;       // radius round the centre that holds the whole chain
@@ -656,7 +657,8 @@ const fragmentShader = /* glsl */ `
     // TCA cycle: seven lumpy enzymes on a loose loop that runs past succinate dehydrogenase in the
     // membrane (the gap), with the intermediates as a stream of luminous beads hopping from one
     // enzyme to the next, faster and brighter when acetyl-CoA is fed in. The cycle reads through
-    // the flow.
+    // the flow. uTcaStream scales that stream: the game's energy route draws the intermediates as
+    // its own counted beads and turns this one off, so they are not drawn twice (the enzymes stay).
     vec3 qt = p - uTca.xyz;
     vec3 Ax = uTcaAxis.xyz;
     float ax = dot(qt, Ax);
@@ -669,18 +671,21 @@ const fragmentShader = /* glsl */ `
       float dm = enzymes(p, 0, nb, kb);
       vec3 alb = uTcaColor * (0.92 + 0.12 * sin(kb * 2.3));
       addD(s, smoothstep(gEdge, -gEdge, dm) * 260.0, shade(alb, nb) + alb * 0.12 + glint(nb, 40.0) * 0.3, vec3(0.0));
-      vec3 U = normalize(cross(Ax, abs(Ax.y) < 0.9 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0)));
-      vec3 V = cross(Ax, U);
-      float ang = atan(dot(inP, V), dot(inP, U));
-      float spin = t * (0.3 + 1.1 * act);
-      float sseg = 6.2831853 / 21.0;
-      float aj = floor((ang - spin) / sseg + 0.5) * sseg + spin;
-      vec3 sc = (U * cos(aj) + V * sin(aj)) * uTca.w;
-      float rb = max(0.0052, 0.6 * gFp);
-      float dsp = length(qt - sc) - rb;
-      vec3 beadCol = mix(uTcaColor, vec3(1.0, 0.9, 0.95), 0.5);
-      float bead = smoothstep(gEdge, -gEdge, dsp) * (0.35 + 0.65 * act);
-      addD(s, 260.0 * bead, shade(beadCol, normalize(qt - sc)) * 1.1, beadCol * bead * (4.0 + 10.0 * act));
+      float dsp = 1e3;   // with no stream the march need not slow down for its beads
+      if (uTcaStream > 0.0) {
+        vec3 U = normalize(cross(Ax, abs(Ax.y) < 0.9 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0)));
+        vec3 V = cross(Ax, U);
+        float ang = atan(dot(inP, V), dot(inP, U));
+        float spin = t * (0.3 + 1.1 * act);
+        float sseg = 6.2831853 / 21.0;
+        float aj = floor((ang - spin) / sseg + 0.5) * sseg + spin;
+        vec3 sc = (U * cos(aj) + V * sin(aj)) * uTca.w;
+        float rb = max(0.0052, 0.6 * gFp);
+        dsp = length(qt - sc) - rb;
+        vec3 beadCol = mix(uTcaColor, vec3(1.0, 0.9, 0.95), 0.5);
+        float bead = smoothstep(gEdge, -gEdge, dsp) * (0.35 + 0.65 * act) * uTcaStream;
+        addD(s, 260.0 * bead, shade(beadCol, normalize(qt - sc)) * 1.1, beadCol * bead * (4.0 + 10.0 * act));
+      }
       s.hint = min(s.hint, max(min(dm, dsp), 0.0) * 0.8);
     } else s.hint = min(s.hint, ringT - 0.045);
 
@@ -1170,9 +1175,10 @@ let warnedSun = false;
 //     is tinted warm and luminous (uSaltWarm), one in the mixed water cool and grey (uSaltCool);
 //     undefined leaves the cell as it is (the game). setSaltTints(warm, cool) changes the two.
 //   hero only: cell.volume = { nucleoid, nucleoidScale, plasmid, plasmidRadius, granules[{pos, radius,
-//     kind}], tca{center, radius, axis, activity, enzymes?[{pos, radius, lobes}] (7; lobes = subunits
-//     drawn, 1..4)}, glycolysis (centre), glycolysisEnzymes?[{pos, radius, lobes}] (9, G6P end
-//     first), glycolysisActivity, receptorDir?
+//     kind}], tca{center, radius, axis, activity, stream? (0..1, default 1: how much of the loop's own
+//     stream of beads is drawn; 0 when something else draws the intermediates), enzymes?[{pos, radius,
+//     lobes}] (7; lobes = subunits drawn, 1..4)}, glycolysis (centre), glycolysisEnzymes?[{pos,
+//     radius, lobes}] (9, G6P end first), glycolysisActivity, receptorDir?
 //     (patch direction from the front pole's centre), receptorRadius?, receptorZ (used when there is
 //     no receptorDir), receptorGlow, receptorFlash, protonGlow, rafts?[{pos, normal, radius}],
 //     vesicles[{pos, radius, glow, membrane, kind}] }
@@ -1227,6 +1233,7 @@ export class CellPass extends Pass {
       uGranuleCount: { value: 0 },
       uTca: { value: new THREE.Vector4(0, 0, -0.5, 0.1) },
       uTcaAxis: { value: new THREE.Vector4(0, 0, 1, 0.5) },
+      uTcaStream: { value: 1 },
       uTcaE: { value: v4(TCA_ENZYMES * 4) },
       uGlyco: { value: new THREE.Vector4(0, 0, 0.45, 0.5) },
       uGlycoBound: { value: 0 },
@@ -1440,6 +1447,7 @@ export class CellPass extends Pass {
     const tca = v.tca;
     u.uTca.value.set(tca.center.x, tca.center.y, tca.center.z, tca.radius);
     u.uTcaAxis.value.set(tca.axis.x, tca.axis.y, tca.axis.z, tca.activity ?? 0.5);
+    u.uTcaStream.value = THREE.MathUtils.clamp(tca.stream ?? 1, 0, 1);
     let te = tca.enzymes;
     if (!te) {
       te = this._enz.get(tca) ?? defaultTcaEnzymes(tca);
