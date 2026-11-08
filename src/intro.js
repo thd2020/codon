@@ -745,7 +745,7 @@ export class Intro {
     const g = this.garden;
     const t = this.t;
     // The dawn brightens as the image opens.
-    g.expo = 0.84 + 0.32 * smooth(T.reveal, 7.5, t);
+    g.expo = 0.86 + 0.36 * smooth(T.reveal, 7.5, t);
     if (this.diveAt == null || t < this.diveAt) this.stepHub(real);
     if (this.diveAt != null) this.stepDive(real);
     g.update(real);
@@ -1007,7 +1007,7 @@ export class Intro {
       g.midSigma = blurPx / 2.2;
       // The softness stays luminous: the exposure lifts as the glass gives up, so the blur reads
       // as pearl rather than murk.
-      g.expo = 1.12 * (1 + 0.28 * smooth(10, 36, blurPx));
+      g.expo = 1.22 * (1 + 0.24 * smooth(10, 36, blurPx));
       g.glass.on = 1;
       g.glass.discR = d.swapR;
       g.glass.barrel = 0.08;
@@ -1015,7 +1015,7 @@ export class Intro {
       // The skin, a curved mirror of sky holding the child's reflection; pressed against it, more so.
       g.mirror = smooth(DIVE.sink - 0.4, DIVE.sink + 1.0, td);
       // Inside the bead the salt's schlieren settle to a faint waver (the salt front is MicroIntro's).
-      g.schlieren = 0.5 - 0.35 * smooth(4.0, 7.0, td);
+      g.schlieren = 0.5 - 0.35 * smooth(3.2, 5.5, td);
       g.skin = smooth(7.2, 9.2, td);
       this.frameH = hFrame;
     }
@@ -1046,7 +1046,7 @@ export class Intro {
       const gap = 0.4;
       this.pushPose(cam, gap, PUSH.tilt, 0.12);
       g.focus = gap;
-      g.expo = 1.12 * 1.28;
+      g.expo = 1.22 * 1.24;
       const hFrame = 2 * gap * TAN;
       g.midSigma = Math.min((0.5 * 0.01 * 1080) / hFrame, 40) / 2.2;
       g.glass.on = 1;
@@ -1054,6 +1054,7 @@ export class Intro {
       g.skin = 0.6;
       this.frameH = hFrame;
       this.audio.tideIn(2, 0.45);
+      this.caption('[the breath slows into a tide]', 2.8);
     }
     this.veil.uniforms.uHold.value = Math.max(0, this.veil.uniforms.uHold.value - real / 1.0);
     this.audio.setScale(this.frameH * 1e-3);
@@ -1207,6 +1208,13 @@ export class Intro {
         this.startMicro();
       }
       this.micro.skip();
+      // Whatever the veil was doing (a skip in the first seconds), the blink comes up on the game.
+      u.uGrad.value = 0;
+      u.uPoint.value = 0;
+      u.uReveal.value = 1;
+      u.uHold.value = 0;
+      this.flash = 0;
+      if (this.look.lens?.uniforms?.uFlash) this.look.lens.uniforms.uFlash.value = 0;
       this.ui.setPicto(false);
       this.ui.setBar(false);
       this.timeScale = 1;

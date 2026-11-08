@@ -284,7 +284,9 @@ const BLADE = /* glsl */ `
     float mound = exp(-hd2 / (2.0 * 0.026 * 0.026));
     bump += hdv / 0.026 * 0.55 * mound * footK;
     col = mix(col, uVein * 1.05, mound * 0.35 * footK);
-    float vein = max(v1 * (0.16 + 0.08 * h12(vec2(lobe, 9.0))), v2 * 0.14);
+    // (close up, where a vein is many pixels wide, it reads as a clear pale band)
+    float veinK = 0.16 + 0.08 * h12(vec2(lobe, 9.0)) + 0.22 * smoothstep(4.0, 16.0, wV / pw);
+    float vein = max(v1 * veinK, v2 * (0.14 + 0.12 * smoothstep(4.0, 16.0, hw2 / pw)));
     col = mix(col, uVein, max(vein, knot * 0.35));
     return col;
   }
@@ -504,7 +506,7 @@ const shellFragment = /* glsl */ `
       float hm = 0.0;
       for (int y = -1; y <= 1; y++) for (int x = -1; x <= 1; x++) {
         vec2 cc = c0 + vec2(float(x), float(y));
-        if (h22(cc + 7.0).x > 0.88) continue;
+        if (h22(cc + 7.0).x > 0.6) continue;
         vec2 j = h22(cc);
         vec2 base = (cc + 0.2 + 0.6 * j) * cell;
         vec2 lean = normalize(base + 1e-3) * (0.55 + 0.5 * j.x) + (j - 0.5) * 0.6;
@@ -518,12 +520,12 @@ const shellFragment = /* glsl */ `
         float dd = length(oa + rd * th - ba * sh);
         float lp = max(th, 0.01) * pw / max(length(vWorld - cameraPosition), 0.01);
         float rr = r0 * (1.0 - 0.6 * sh);
-        float core = 1.0 - smoothstep(rr - lp * 0.5, rr + lp * 0.5, dd);
-        // A glass fibre: its edges brighter than its middle, and fading out toward its fine tip.
-        float edge = smoothstep(rr * 0.15, rr * 0.9, dd);
-        hm = max(hm, core * (0.35 + 0.65 * edge) * (1.0 - 0.55 * sh * sh));
+        // A glass fibre: a soft, pale, translucent rod (no drawn edge), fading toward its fine tip.
+        float soft = rr * 0.9 + lp;
+        float core = 1.0 - smoothstep(rr - soft, rr + soft, dd);
+        hm = max(hm, core * (1.0 - 0.7 * sh * sh));
       }
-      a = mix(a, hm * 0.7, res);
+      a = mix(a, hm * 0.32, res);
       col = mix(col, skyTop * 1.15 + uSun * 0.12, res);
     }
     col += uSun * pow(max(dot(normalize(uGlowDir + V), N), 0.0), 8.0) * 0.25 * uExpo;
@@ -615,7 +617,7 @@ const beadFragment = /* glsl */ `
         float core = 1.0 - smoothstep(rr - soft, rr + soft, dd);
         hm = max(hm, core * smoothstep(0.2, 0.7, rr / lp) * (0.4 + 0.6 * sh));
       }
-      c = mix(c, skyColor(vec3(0.0, 1.0, 0.0)) * 1.05 + uSun * 0.1, hm * 0.22 * m);
+      c = mix(c, skyColor(vec3(0.0, 1.0, 0.0)) * 1.05 + uSun * 0.1, hm * 0.1 * m);
     }
     return c;
   }
@@ -1811,7 +1813,7 @@ export class Garden {
     u.uTime.value = this.time;
     u.uSkyOcc.value = this.skyOcc;
     u.uExpo.value = this.expo;
-    this.farExpo.value = this.expo * 0.44;
+    this.farExpo.value = this.expo * 0.37;
     const cam = this.camera;
     const focus = Math.max(this.focus, 0.05);
     cam.near = clamp(0.05 * focus, 0.02, 2);

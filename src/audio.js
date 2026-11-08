@@ -536,18 +536,22 @@ export class IntroAudio {
     for (const f of fs) {
       const o = c.createOscillator();
       o.frequency.value = f;
-      const g = c.createGain();
-      g.gain.value = 0;
+      // A slow tremolo on the tone's own gain (0.012 +- 0.004), then the voice's level after it,
+      // so letting the level down silences the tremolo too.
+      const trem = c.createGain();
+      trem.gain.value = 0.012;
       const v = c.createOscillator();
       v.frequency.value = 0.6 + Math.random();
       const vg = c.createGain();
       vg.gain.value = 0.004;
-      v.connect(vg).connect(g.gain);
-      o.connect(g).connect(this.master);
+      v.connect(vg).connect(trem.gain);
+      const g = c.createGain();
+      g.gain.value = 0;
+      o.connect(trem).connect(g).connect(this.master);
       g.connect(this.verb);
       o.start();
       v.start();
-      g.gain.setTargetAtTime(0.012, this.now, 0.8);
+      g.gain.setTargetAtTime(1, this.now, 0.8);
       this.rodVoices.push({ o, g, v });
     }
   }
@@ -570,6 +574,7 @@ export class IntroAudio {
     const lp = c.createBiquadFilter();
     lp.type = 'lowpass';
     lp.frequency.value = 1600;
+    this.wobbleOscs = [];
     for (const f of [659.3, 662.1]) {
       const o = c.createOscillator();
       o.type = 'triangle';
@@ -582,6 +587,7 @@ export class IntroAudio {
       o.connect(lp);
       o.start();
       v.start();
+      this.wobbleOscs.push(o, v);
     }
     lp.connect(g).connect(this.master);
     g.connect(this.verb);
@@ -617,14 +623,23 @@ export class IntroAudio {
   quiet(seconds = 4) {
     if (!this.on) return;
     const at = this.now;
+    // Let the voices down, then stop their oscillators once they are silent.
+    const end = at + seconds * 1.6 + 2;
     for (const r of this.rodVoices) {
       r.g.gain.cancelScheduledValues(at);
       r.g.gain.setTargetAtTime(0, at, seconds / 4);
       r.out = true;
+      if (!r.stopped) {
+        r.stopped = true;
+        r.o.stop(end);
+        r.v.stop(end);
+      }
     }
     if (this.wobble) {
       this.wobble.gain.cancelScheduledValues(at);
       this.wobble.gain.setTargetAtTime(0, at + Math.min(2, seconds / 2), seconds / 4);
+      for (const o of this.wobbleOscs ?? []) o.stop(end + 2);
+      this.wobbleOscs = [];
     }
     this.ramp(this.shimmer.gain, 0, seconds);
     this.ramp(this.hiss.gain, 0.02, seconds);
