@@ -224,15 +224,22 @@ console.log('\n# a full ATP pool: the synthases stand still, nothing is counted 
 {
   const { m } = fresh();
   let acc = 0;
+  // Δp arrives in bursts (a complex pumps 4 H+ at once, 2 mV), so it is read as its mean over the
+  // last 3 s rather than at one instant, which can sit a few mV either side.
+  let pmfSum = 0, pmfN = 0;
   for (let k = 0; k < 45 / DT; k++) {
     acc += 1 * DT;
     if (acc >= 1 && m.uptakeGlucose()) acc--;
     m.update(DT, { thrust: k * DT < 20 ? 1 : 0, oxygen: 1 });
+    if (k * DT >= 42) {
+      pmfSum += m.state.pmf;
+      pmfN++;
+    }
   }
   const M = m.ledger.made;
   console.log(`     45 s at 1 glucose/s: ATP ${(m.state.atp * 100).toFixed(0)}%, Δp ${m.state.pmf.toFixed(0)} mV, spilled ${M.atpSpilled.toFixed(1)} of ${M.atpSubstrate + M.atpSynthase} made`);
   between('ATP spilled from a full pool (share of ATP made)', M.atpSpilled / (M.atpSubstrate + M.atpSynthase), 0, 0.03);
-  between('Δp at rest in plenty (mV)', m.state.pmf, -206, -185);
+  between('Δp at rest in plenty, mean of the last 3 s (mV)', pmfSum / pmfN, -206, -185);
   check('state.totals.atpMade = ATP that reached the pool', m.state.totals.atpMade, M.atpSubstrate + M.atpSynthase - M.atpSpilled, 1e-6);
 }
 

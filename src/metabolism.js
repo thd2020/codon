@@ -1253,6 +1253,9 @@ export class Metabolism {
       this.task[i] = T.ferment;
       // Ethanol only when its two NADH are there or on their way (and not promised to an acetyl-CoA
       // already waiting): the cell keeps its redox balance. Otherwise acetate, for an ATP.
+      // The flag is cleared first: it still holds whatever this bead carried before, and a stale 1
+      // would count the bead as already bound for ethanol and strand two NADH at the dehydrogenase.
+      this.flag[i] = 0;
       const toEthanol = this.spareNadh() >= 2;
       this.flag[i] = toEthanol ? 1 : 0;
       this.travel(i, toEthanol ? this.adh : this.ack, 0.3, 0.3, 0.8, 0.01, 0.1);
