@@ -469,20 +469,32 @@ export class IntroAudio {
     o.stop(at + 0.15);
   }
 
-  // The tear's contact, for The first morning: soft, deep, pitched down. No splash.
+  // The tear's contact, for The first morning: soft, deep, pitched down, settling onto A (the motif
+  // again around the tear: this A, the breath's U, then glass G). No splash. A1 with soft A2 and A3
+  // partials under a closing low-pass, so the note carries on small speakers too.
   dumm() {
     if (!this.on) return;
     const c = this.ctx;
     const at = this.now;
-    const o = c.createOscillator();
-    o.frequency.setValueAtTime(74, at);
-    o.frequency.exponentialRampToValueAtTime(46, at + 1.3);
+    const lp = c.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.Q.value = 0.4;
+    lp.frequency.setValueAtTime(560, at);
+    lp.frequency.exponentialRampToValueAtTime(260, at + 1.6);
     const g = c.createGain();
-    this.env(g.gain, at, [[0, 0], [0.03, 0.35], [1.8, 0]]);
-    o.connect(g).connect(this.master);
+    this.env(g.gain, at, [[0, 0], [0.03, 0.3], [0.5, 0.22], [2.1, 0]]);
+    lp.connect(g).connect(this.master);
     g.connect(this.verb);
-    o.start(at);
-    o.stop(at + 1.9);
+    for (const [k, level] of [[1, 1], [2, 0.42], [4, 0.14]]) {
+      const o = c.createOscillator();
+      o.frequency.setValueAtTime(74 * k, at);
+      o.frequency.exponentialRampToValueAtTime(55 * k, at + 0.9);
+      const og = c.createGain();
+      og.gain.value = level;
+      o.connect(og).connect(lp);
+      o.start(at);
+      o.stop(at + 2.2);
+    }
   }
 
   // ---------------------------------------------------------------- The First Morning's voices
@@ -766,6 +778,21 @@ export class IntroAudio {
     this.ramp(this.tideLevel.gain, 0.32, seconds);
     this.nextBird = 0;
     this.tideOn = true;
+  }
+
+  // An earlier opening's sound giving way to a new one (The First Morning replayed mid-game): all of
+  // it fades, and then its context closes.
+  retire(seconds = 1.2) {
+    if (!this.on) return;
+    const t = this.now;
+    const g = this.master.gain;
+    g.cancelScheduledValues(t);
+    g.setValueAtTime(g.value, t);
+    g.linearRampToValueAtTime(0, t + seconds);
+    this.settled = true;
+    this.tideOn = true;
+    this.nextBird = 0;
+    setTimeout(() => this.dispose(), (seconds + 0.25) * 1000);
   }
 
   dispose() {

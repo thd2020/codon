@@ -58,6 +58,7 @@ const T = {
   hubLimit: 38,
 };
 // The dive, in seconds from diveAt.
+const CAP_MIN = 1.5; // the shortest time a caption stays up (s)
 const DIVE = { sink: 3.0, push: 8.0, skin: 9.65, cross: 10.0, flashUp: 0.35, flashDown: 0.35 };
 const SKIN = { start: 9.35, end: 0.42, last: 0.27 }; // distance from the skin (mm): start of the push, its end, the last approach
 const H_END = 11.5; // eye above the bead when the glass fills the frame
@@ -247,8 +248,16 @@ class IntroUI {
       boxShadow: '0 0 6px rgba(248,246,240,0.95), 0 0 14px rgba(248,246,240,0.6)', width: '100px', transition: 'opacity 0.25s ease',
     }, this.bar);
     this.barLabel = el('div', { fontSize: '13px', fontWeight: '700', color: '#5e3a8c', textShadow: halo, letterSpacing: '0.02em', fontVariantNumeric: 'tabular-nums', transition: 'opacity 0.25s ease' }, this.bar);
-    // Captions.
-    this.cap = el('div', { position: 'absolute', left: '50%', bottom: '3.6vh', transform: 'translateX(-50%)', fontSize: '15px', fontStyle: 'italic', color: '#4f4366', textShadow: halo, opacity: '0', transition: 'opacity 0.4s ease', whiteSpace: 'nowrap' }, this.root);
+    // Captions: up to two lines at once (the newer below), each held at least CAP_MIN seconds; any
+    // more wait their turn.
+    this.cap = el('div', { position: 'absolute', left: '50%', bottom: '3.6vh', transform: 'translateX(-50%)', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '3px' }, this.root);
+    this.capLines = [0, 1].map(() => ({
+      node: el('div', { fontSize: '15px', fontStyle: 'italic', color: '#4f4366', textShadow: halo, opacity: '0', transition: 'opacity 0.4s ease', whiteSpace: 'nowrap', order: '0' }, this.cap),
+      until: 0,
+      since: 0,
+    }));
+    this.capQueue = [];
+    this.capOrder = 0;
     // The hub's pictogram: a circle (the glass) and a scroll arrow.
     this.picto = el('div', { position: 'absolute', opacity: '0', transition: 'opacity 1.2s ease', filter: 'drop-shadow(0 0 3px rgba(248,246,240,0.9))' }, this.root,
       `<svg width="58" height="40" viewBox="0 0 58 40" fill="none">
@@ -262,7 +271,6 @@ class IntroUI {
       `<svg viewBox="0 0 100 100" width="100%" height="100%"><circle cx="50" cy="50" r="46" fill="none" stroke="rgba(248,246,240,0.85)" stroke-width="6"/>
        <circle class="arc" cx="50" cy="50" r="46" fill="none" stroke="#5e3a8c" stroke-width="4" stroke-linecap="round" stroke-dasharray="289" stroke-dashoffset="289" transform="rotate(-90 50 50)"/></svg>`);
     this.skipArc = this.skip.querySelector('.arc');
-    this.capUntil = 0;
     this.label = null;
     this.was = {}; // the last value written to each style, so a frame writes only what changed
   }
@@ -280,16 +288,41 @@ class IntroUI {
     this.pre.style.display = on ? 'flex' : 'none';
   }
 
-  caption(text, until) {
-    this.cap.textContent = text;
-    this.cap.style.opacity = '1';
-    this.capUntil = until;
+  // A caption for `seconds` from `now` (wall-clock seconds). It takes a free line, or the older line
+  // once that has been read for CAP_MIN seconds; otherwise it waits.
+  caption(text, now, seconds) {
+    this.capQueue.push({ text, seconds });
+    this.tickCaption(now);
   }
 
   tickCaption(now) {
-    if (this.capUntil && now > this.capUntil) {
-      this.cap.style.opacity = '0';
-      this.capUntil = 0;
+    for (const l of this.capLines) {
+      if (l.until && now > l.until) {
+        l.node.style.opacity = '0';
+        l.until = 0;
+      }
+    }
+    while (this.capQueue.length) {
+      let line = this.capLines.find((l) => !l.until);
+      if (!line) {
+        const old = this.capLines[0].since <= this.capLines[1].since ? this.capLines[0] : this.capLines[1];
+        if (now - old.since < CAP_MIN) break;
+        line = old;
+      }
+      const c = this.capQueue.shift();
+      line.node.textContent = c.text;
+      line.node.style.order = String(++this.capOrder);
+      line.node.style.opacity = '1';
+      line.since = now;
+      line.until = now + Math.max(c.seconds, CAP_MIN);
+    }
+  }
+
+  hideCaptions() {
+    this.capQueue.length = 0;
+    for (const l of this.capLines) {
+      l.node.style.opacity = '0';
+      l.until = 0;
     }
   }
 
@@ -344,13 +377,19 @@ export class Intro {
 
   // Morning: The First Morning's director (morning.js, passed in by playFirstMorning()). With it the
   // intro plays the notebook's first page (shots 0 -> 1 -> 2 -> 3) and then continues from the hub,
-  // lens in hand, exactly as the first launch does from 0:08. onHub(intro): called when the hub
-  // takes over (the morning ended or was skipped). autoDive: false keeps the hub until the player
-  // dives (by default the glass dives by itself, as on first launch). preroll: false starts at once
-  // (call it from a click or key handler, so the sound can start in that gesture), with no web
-  // pre-roll.
-  constructor({ renderer, composer, look, scene, camera, controls, cellPass, water, hero, neighbours, player, hud, params, MicroIntro = null, iconUrl, Morning = null, onHub = null, autoDive = true, preroll = true } = {}) {
-    Object.assign(this, { renderer, composer, look, scene, camera, controls, cellPass, water, hero, neighbours, player, hud, onHub, autoDive });
+  // lens in hand, the run select for the next morning. onHub(intro): called when the hub takes over
+  // (the morning ended or was skipped). onDive(source, intro): called when the player dives from the
+  // hub (source: 'click', 'key', 'pad' or 'auto'); return true to take the dive over (the hub then
+  // holds, lens in hand, until the caller calls intro.finish()). replay: the dive from the hub is
+  // the 3 s replay dive (story §5.3): the Garden's dive at its fastest pace, then straight into the
+  // game at the crossing, with no shot 6 (the lineage's cell is already soft) and no MicroIntro
+  // first-launch scenes. autoDive: false keeps the hub until the player dives (on first launch the
+  // glass dives by itself). preroll: false starts at once (call it from a click or key handler, so
+  // the sound can start in that gesture), with no web pre-roll. audio: an earlier opening's
+  // IntroAudio still playing (main.js's first-launch `intro.audio`): it fades out and closes as this
+  // one starts, so its tide never plays under the dawn.
+  constructor({ renderer, composer, look, scene, camera, controls, cellPass, water, hero, neighbours, player, hud, params, MicroIntro = null, iconUrl, Morning = null, onHub = null, onDive = null, autoDive = true, replay = false, preroll = true, audio = null } = {}) {
+    Object.assign(this, { renderer, composer, look, scene, camera, controls, cellPass, water, hero, neighbours, player, hud, onHub, onDive, autoDive, replay });
     params = params ?? new URLSearchParams(location.search);
     this.params = params;
     this.headless = params.has('frames');
@@ -416,6 +455,9 @@ export class Intro {
     }
     this.captions = caps;
     this.audio = new IntroAudio();
+    // An earlier opening's sound still playing (its tide is the drop's ambience after the first
+    // launch): it gives way to this one, which leaves its own tide when it ends.
+    this.prevAudio = audio && audio !== this.audio ? audio : null;
 
     const Micro = MicroIntro ?? MicroIntroFound;
     const deps = { renderer, scene, camera, controls, cellPass, water, hero, neighbours, hud, look, reducedMotion: this.reducedMotion };
@@ -459,7 +501,7 @@ export class Intro {
   // A caption for a sound (story §4.2: every sound that is not speech has one), whoever plays it,
   // and whether or not sound is on.
   caption(text, seconds = 2.6) {
-    if (this.captions) this.ui.caption(text, this.clockNow() + seconds);
+    if (this.captions) this.ui.caption(text, this.clockNow(), seconds);
   }
 
   // ---------------------------------------------------------------------------- stage swap
@@ -549,6 +591,9 @@ export class Intro {
       wheel: (e) => {
         if (this.state === 'preroll' || this.state === 'done') return;
         e.preventDefault();
+        // The First Morning (and a blink) is watched, not steered: a scroll there is not saved up for
+        // the hub's first frame.
+        if (this.state === 'morning' || this.state === 'blink') return;
         const dy = e.deltaMode === 1 ? e.deltaY * 33 : e.deltaY;
         this.wheel += clamp(dy, -300, 300);
         if (this.state === 'garden' && this.t >= T.control) this.lastInput = this.t;
@@ -594,7 +639,7 @@ export class Intro {
     } catch {
       /* storage blocked */
     }
-    if (!on) this.ui.cap.style.opacity = '0';
+    if (!on) this.ui.hideCaptions();
   }
 
   // A later gesture: if the browser still holds the sound suspended, try again inside it.
@@ -615,6 +660,8 @@ export class Intro {
     if (this.state !== 'preroll') return;
     this.state = this.morning ? 'morning' : 'garden';
     this.t = 0;
+    this.prevAudio?.retire?.(1.2);
+    this.prevAudio = null;
     this.morning?.start();
   }
 
@@ -635,6 +682,11 @@ export class Intro {
     g.skyOcc = 1;
     g.schlieren = 0.5;
     this.timeScale = 1;
+    // Nothing from the morning carries into the hub: no saved-up scroll, and an Escape held across
+    // the morning's end has to be let go before it can skip again (it would skip the run select).
+    this.wheel = 0;
+    this.skipHold = 0;
+    this.skipLatch = this.keys.has('Escape') || !!this.pad?.back;
     for (const c of this.cues) if (c.clock === 'morning') c.done = true;
     this.onHub?.(this);
   }
@@ -677,7 +729,7 @@ export class Intro {
         a.setBreathing('steady');
         a.breath('u', 0, { dur: 2.4, level: 0.07 });
       }, ['[a long breath out; the breathing steadies]', 3]),
-      cue('open', 7.3, 'the glass settles into a drone on A', () => a.droneIn(0.035, 4)),
+      cue('open', 7.3, 'the glass settles into a drone on A', () => a.droneIn(0.035, 4), ['[a low glass hum]', 2.6]),
       // Glass G (the motif's G) sounds on the dive input itself, see requestDive(); listed for the sheet.
       cue('dive', 0, 'glass G (on the dive input: A-U-G, start)', () => {}),
       cue('dive', 3.2, 'birdsong slows', () => {}, ['[birdsong slows into long moans]', 3]),
@@ -774,6 +826,7 @@ export class Intro {
     this.ui.tickCaption(this.clockNow());
     this.stepSkip(real);
     if (this.state === 'blink') return this.stepBlink(real);
+    if (this.state === 'replay') return this.stepReplayOut(real);
     this.runCues();
     if (this.state === 'morning') return this.stepMorning(real);
     if (this.state === 'garden') this.stepGarden(real);
@@ -968,7 +1021,14 @@ export class Intro {
   }
 
   requestDive(source) {
-    if (this.diveAt != null || this.state !== 'garden') return;
+    if (this.diveAt != null || this.state !== 'garden' || this.diveTaken) return;
+    // A caller that runs its own dive (the run select's) takes it over here; the hub holds.
+    if (this.onDive && this.onDive(source, this) === true) {
+      this.diveTaken = true;
+      this.ui.setPicto(false);
+      this.audio.focusWhisper(0, 0);
+      return;
+    }
     const h = this.hub;
     this.diveSource = source;
     // The dive itself sounds glass G: A-U-G, start. The focus whisper stops with the hub.
@@ -1002,9 +1062,11 @@ export class Intro {
     // W, scroll or a trigger hurries the dive, never past four times the authored pace (the whole
     // path then still takes longer than the 3 s replay dive).
     const pad = this.pad;
-    const want = this.keys.has('KeyW') || this.wheel > 0 || (pad && pad.rt > 0.3) ? 4 : 1;
+    const want = this.replay || this.keys.has('KeyW') || this.wheel > 0 || (pad && pad.rt > 0.3) ? 4 : 1;
     this.wheel = 0;
-    this.diveRate += (want - this.diveRate) * ease(real, want > this.diveRate ? 0.5 : 1.2);
+    // The replay dive runs at the fastest pace throughout: about 3 s from the hub to the crossing.
+    if (this.replay) this.diveRate = 4;
+    else this.diveRate += (want - this.diveRate) * ease(real, want > this.diveRate ? 0.5 : 1.2);
     if (this.reducedMotion) return this.stepDiveReduced(real);
     this.td += real * (this.td < DIVE.skin ? this.diveRate : 1);
     const td = this.td;
@@ -1135,6 +1197,7 @@ export class Intro {
   // Under the meniscus: hand the micro part to MicroIntro, the flash at its peak (MicroIntro lets it
   // down over 0.35 s from wherever the lens's flash is when it starts).
   cross() {
+    if (this.replay) return this.crossReplay();
     this.enterMicro();
     this.state = 'micro';
     this.tm = 0;
@@ -1143,6 +1206,42 @@ export class Intro {
     this.flash = 0;
     this.startMicro();
     this.micro.update?.(0, 0);
+  }
+
+  // The replay dive's crossing: no shot 6 and no first-launch scenes; under the flash's peak the game
+  // comes up as the hand-over leaves it (MicroIntro.skip()), and the flash lets down over it.
+  crossReplay() {
+    this.enterMicro();
+    this.state = 'replay';
+    this.tm = 0;
+    this.flash = 0;
+    const lf = this.look.lens?.uniforms?.uFlash;
+    if (lf) lf.value = this.reducedMotion ? 0 : 0.9;
+    this.startMicro();
+    try {
+      this.micro.skip();
+    } catch (err) {
+      console.warn('Intro: MicroIntro.skip threw in the replay dive.', err);
+    }
+    this.timeScale = 1;
+    this.ui.setBar(false);
+    this.audio.settle();
+    if (!this.hudShown) {
+      this.hudShown = true;
+      this.hud?.show?.(true, 1.2);
+    }
+  }
+
+  stepReplayOut(real) {
+    this.tm += real;
+    const f = this.reducedMotion ? 0 : 0.9 * (1 - smooth(0, DIVE.flashDown, this.tm));
+    const lf = this.look.lens?.uniforms?.uFlash;
+    if (lf) lf.value = f;
+    this.veil.uniforms.uFlash.value = lf ? 0 : f;
+    if (this.tm >= DIVE.flashDown + 0.05) {
+      if (lf) lf.value = 0;
+      this.finish();
+    }
   }
 
   startMicro() {
@@ -1211,7 +1310,7 @@ export class Intro {
   // --------------------------------------------------------------------------------- skip
   // Hold Escape (or B on a pad) for 1 s at any time: one blink, then shot 7's end state.
   stepSkip(real) {
-    if (this.state === 'blink' || this.state === 'done') return;
+    if (this.state === 'blink' || this.state === 'done' || this.state === 'replay') return;
     const pad = this.pad;
     let held = this.keys.has('Escape') || (pad && pad.back);
     // After skipping The First Morning, the same held key does not go on to skip the opening: it has

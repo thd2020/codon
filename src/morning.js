@@ -6,38 +6,55 @@ import { Intro } from './intro.js';
 // through the beads, upside down and small. No face: it is a silhouette.
 //
 // Local frame (mm): origin on the step under the hips, +x the way the child faces, +y up, +z the
-// child's left. A nine-year-old: thigh about 350, shin 330, hips to shoulders 380, head radius 95.
+// child's left. A nine-year-old: thigh about 330, shin 300, hips to shoulders 330, head radius 86.
+// Drawn for the silhouette, which is all the drops ever show, small and upside down: a clear head
+// with its hair gathered at the back, a rounded back, the shins and feet on the step, and light
+// between the parts (under the thighs, between the chest and the knees, inside the raised arm).
 const POSE = {
-  // P0: sitting with the knees drawn up, arms round the shins, the head down on the knees. Drawn to
-  // read small and upside down: the rounded back, a big head bowed onto the knees, the shins.
+  // P0: sitting with the knees drawn up, arms round the shins, the head bowed onto the knees.
   hug: {
-    pelvis: [0, 105, 0], back: [42, 262, 0], shoulder: [150, 378, 0], head: [290, 452, 0],
-    knee: [305, 335, 0], ankle: [345, 46, 0], toe: [445, 30, 0],
-    elbow: [238, 228, -30], hand: [342, 206, -30],
+    pelvis: [0, 108, 0], back: [22, 262, 0], shoulder: [72, 392, 0], head: [228, 482, 0], hair: [170, 548, 0],
+    knee: [292, 336, 0], ankle: [318, 48, 0], toe: [418, 28, 0],
+    elbow: [128, 232, -46], hand: [372, 236, -46],
   },
-  // P2: leaning forward, the head lifted off the knees, one hand raised to the face.
+  // P2: leaning forward, the head lifted off the knees, one hand raised to the face, its elbow on the
+  // knee.
   wipe: {
-    pelvis: [0, 105, 0], back: [52, 268, 0], shoulder: [170, 392, 0], head: [322, 500, 0],
-    knee: [305, 335, 0], ankle: [345, 46, 0], toe: [445, 30, 0],
-    elbow: [300, 330, -40], hand: [372, 462, -40],
+    pelvis: [0, 108, 0], back: [34, 266, 0], shoulder: [104, 398, 0], head: [214, 560, 0], hair: [150, 610, 0],
+    knee: [292, 336, 0], ankle: [318, 48, 0], toe: [418, 28, 0],
+    elbow: [318, 392, -46], hand: [300, 548, -46],
   },
   // P3: turned to the leaf and leaning right over it (by then out of the drops' sight).
   lean: {
-    pelvis: [0, 105, 0], back: [140, 240, 0], shoulder: [300, 300, 0], head: [450, 300, 0],
+    pelvis: [0, 108, 0], back: [140, 240, 0], shoulder: [300, 300, 0], head: [450, 300, 0], hair: [400, 380, 0],
     knee: [300, 300, 0], ankle: [352, 46, 0], toe: [446, 28, 0],
     elbow: [420, 200, -60], hand: [520, 160, -60],
   },
 };
+const POSES = ['hug', 'wipe', 'lean'];
 const JOINTS = Object.keys(POSE.hug);
+const SOB_JOINTS = ['shoulder', 'head', 'hair', 'elbow'];
+// The capsules: [from, radius, to, radius]. The trunk in two (so the back rounds), the neck, a
+// thigh, a shin, a foot (these six melt into one mass), then the near arm in two (kept distinct).
+const CAPS = [
+  ['pelvis', 92, 'back', 86],
+  ['back', 86, 'shoulder', 76],
+  ['shoulder', 52, 'head', 44],
+  ['pelvis', 66, 'knee', 56],
+  ['knee', 54, 'ankle', 40],
+  ['ankle', 38, 'toe', 28],
+  ['shoulder', 40, 'elbow', 34],
+  ['elbow', 33, 'hand', 28],
+];
 
 export class ChildFigure {
   constructor(uniforms) {
     this.u = uniforms;
     this.j = {};
     for (const k of JOINTS) this.j[k] = new THREE.Vector3();
-    // Where the child sits, relative to the tear bead: on the step, beyond the plant and to its right
-    // as the low camera looks at the house, side-on to it.
-    this.root = new THREE.Vector3(320, -175, -1200);
+    // Where the child sits, relative to the tear bead: on the top step, beyond the plant, side-on to
+    // the low camera and in front of the lit window as the drop sees them.
+    this.root = SIT_ROOT.clone();
     this.facing = Math.PI; // the way the child faces in the xz-plane (pi: toward -x)
     this.glint = 0;
     this._m = new THREE.Matrix4();
@@ -48,46 +65,43 @@ export class ChildFigure {
   pose(w, sob = 0) {
     for (const k of JOINTS) {
       const v = this.j[k].set(0, 0, 0);
-      for (const name of ['hug', 'wipe', 'lean']) {
+      for (const name of POSES) {
         const a = w[name] ?? 0;
         if (a) v.x += POSE[name][k][0] * a, v.y += POSE[name][k][1] * a, v.z += POSE[name][k][2] * a;
       }
     }
     if (sob) {
       // The shoulders catch up and back, the head with them; the hands stay on the shins.
-      for (const k of ['shoulder', 'head', 'elbow']) this.j[k].add(_t.set(-14 * sob, 26 * sob, 0));
+      for (const k of SOB_JOINTS) this.j[k].add(_t.set(-14 * sob, 26 * sob, 0));
       this.j.back.add(_t.set(-6 * sob, 12 * sob, 0));
     }
     return this;
   }
 
-  // Writes the figure into the Garden's uniforms (relative to the bead).
+  // A joint, in the bead's frame.
+  at(k, out = _w) {
+    return out.copy(this.j[k]).applyMatrix4(this._m);
+  }
+
+  // Writes the figure into the Garden's uniforms (relative to the bead). Allocates nothing.
   apply() {
     const u = this.u;
     const q = this._q.setFromAxisAngle(_Y, -this.facing);
-    const m = this._m.makeRotationFromQuaternion(q).setPosition(this.root);
-    const J = (k) => _w.copy(this.j[k]).applyMatrix4(m);
-    const cap = (i, a, ra, b, rb) => {
-      const A = u.uSitA.value[i], Bv = u.uSitB.value[i];
-      const pa = J(a);
-      A.set(pa.x, pa.y, pa.z, ra);
-      const pb = J(b);
-      Bv.set(pb.x, pb.y, pb.z, rb);
-    };
-    // The back in two (so it rounds), the hood joining head to shoulders, a thigh, a shin, a foot
-    // and the near arm (the far one is hidden behind the body in profile).
-    cap(0, 'pelvis', 102, 'back', 100);
-    cap(1, 'back', 100, 'shoulder', 90);
-    cap(2, 'shoulder', 74, 'head', 62);
-    cap(3, 'pelvis', 74, 'knee', 62);
-    cap(4, 'knee', 60, 'ankle', 46);
-    cap(5, 'ankle', 42, 'toe', 33);
-    cap(6, 'shoulder', 46, 'elbow', 40);
-    cap(7, 'elbow', 39, 'hand', 33);
-    const h = J('head');
-    u.uSitHead.value.set(h.x, h.y, h.z, 112);
+    this._m.makeRotationFromQuaternion(q).setPosition(this.root);
+    for (let i = 0; i < CAPS.length; i++) {
+      const [a, ra, b, rb] = CAPS[i];
+      const pa = this.at(a);
+      u.uSitA.value[i].set(pa.x, pa.y, pa.z, ra);
+      const pb = this.at(b);
+      u.uSitB.value[i].set(pb.x, pb.y, pb.z, rb);
+    }
+    u.uSitA.value[8].w = 0;
+    const h = this.at('head');
+    u.uSitHead.value.set(h.x, h.y, h.z, 98);
+    const hr = this.at('hair');
+    u.uSitHair.value.set(hr.x, hr.y, hr.z, 44);
     // The brass loupe in the lap, on the near side, between the chest and the thighs.
-    const g = _w.set(0, 0, 0).add(this.j.pelvis).lerp(this.j.knee, 0.55).add(_t.set(10, 30, -60)).applyMatrix4(m);
+    const g = _w.set(0, 0, 0).add(this.j.pelvis).lerp(this.j.knee, 0.55).add(_t.set(10, 30, -60)).applyMatrix4(this._m);
     u.uSitGlint.value.set(g.x, g.y, g.z, this.glint);
   }
 }
@@ -95,6 +109,9 @@ export class ChildFigure {
 const _Y = new THREE.Vector3(0, 1, 0);
 const _w = new THREE.Vector3();
 const _t = new THREE.Vector3();
+// Where the child sits (on the top step) and where they lean in to (over the leaf), relative to the bead.
+const SIT_ROOT = new THREE.Vector3(560, -74, -1400);
+const LEAN_ROOT = new THREE.Vector3(40, 0, -400);
 
 // ================================================================================ The First Morning
 // The notebook's first page, a drawing of a falling tear, plays this (story §5.1, shots 0 -> 1 -> 2
@@ -127,7 +144,7 @@ const _t = new THREE.Vector3();
 // R^2/((l-1)(2l+1) nu) about 0.9 and 0.33 s. At full speed the modes would be a shimmer, so they are
 // let down as time returns (Codon staging, story §7: 'High-speed camera').
 
-const TAN21 = Math.tan(THREE.MathUtils.degToRad(21));
+const HEADROOM = Math.tan(THREE.MathUtils.degToRad(2));
 const D2R = Math.PI / 180;
 const clamp = (x, a, b) => Math.min(b, Math.max(a, x));
 const smooth = (e0, e1, x) => {
@@ -186,7 +203,7 @@ const AZ = -17;
 const CAM = {
   start: { d: 42, el: 9, az: AZ - 2 },
   tenth: 26, // at 0:10
-  near: { d: 13.5, el: 4, az: AZ + 2 },
+  near: { d: 11, el: 4, az: AZ + 2 },
   back: { d: 19, el: 6 },
   rise: { d: 24, el: 18 },
   top: { d: 117, el: 90 },
@@ -200,6 +217,8 @@ export class Morning {
     this.audio = intro.audio;
     this.reducedMotion = intro.reducedMotion;
     this.figure = new ChildFigure(this.garden.u);
+    this.weights = { hug: 1, wipe: 0, lean: 0 };
+    this.mergeDesc = { bead: new THREE.Vector4(), tear: new THREE.Vector4(), k: 0, merged: new THREE.Vector4(), ring: new THREE.Vector3() };
     this.timeScale = 1;
     this.world = 0;
     this.done = false;
@@ -258,8 +277,8 @@ export class Morning {
       cue(8.7, 'a glassy tick: the beads tremble', () => a.beadTick?.(), ['[a glassy tick]', 2]),
       cue(M.sob, 'a sob: the shoulders shake', () => a.sob?.(), ['[a catch of breath]', 2.4]),
       cue(M.lean + 0.4, 'the breath is held', () => a.setBreathing('held')),
-      cue(M.slow, 'time slows: the garden holds still', () => a.setSlow?.(1, 1.2)),
-      cue(M.contact, 'contact: a soft, deep dumm (no splash)', () => a.dumm(), ['[a soft, deep note]', 2.6]),
+      cue(M.slow, 'time slows: the garden holds still', () => a.setSlow?.(1, 1.2), ['[the garden goes quiet]', 2.4]),
+      cue(M.contact, 'contact: a soft, deep dumm on A (no splash; the motif: A)', () => a.dumm(), ['[a soft, deep note]', 2.6]),
       cue(M.contact + 1.3, 'U: the child breathes out (the motif: U)', () => a.breath('u', 0, { dur: 2.6, level: 0.08 }), ['[a long breath out]', 2.8]),
       cue(M.ring - 0.3, 'glass G (A-U-G: start)', () => a.glassG(0, { level: 0.1 }), ['[a second glass note]', 2.6]),
       cue(M.normal, 'the birds return', () => {
@@ -269,7 +288,7 @@ export class Morning {
       }, ['[birdsong returns]', 2.4]),
       cue(M.click, 'a fingernail clicks on brass', () => a.click(), ['[a fingernail taps brass]', 1.8]),
       cue(M.steady, 'the breathing steadies: looking calms them', () => a.setBreathing('steady'), ['[the breathing steadies]', 3]),
-      cue(M.steady + 0.3, 'the glass settles into a drone on A', () => a.droneIn(0.035, 4)),
+      cue(M.steady + 0.3, 'the glass settles into a drone on A', () => a.droneIn(0.035, 4), ['[a low glass hum]', 2.6]),
     ];
   }
 
@@ -304,6 +323,9 @@ export class Morning {
     g.focusBlur = null;
     g.mirror = 0;
     g.skin = 0;
+    // Everything the morning will draw is compiled now, in the black before the first light (the
+    // merge's sphere trace would otherwise first compile at the tear's contact).
+    g.warmUp(this.intro.renderer);
     this.step(0);
   }
 
@@ -318,10 +340,10 @@ export class Morning {
     this.world = w;
     // Shaders run on world time: the salt's curls and the dust stand still at 1/500.
     g.update(dw);
-    this.stepLook(t);
     this.stepFigure(t);
     this.stepTear(t, w);
     this.stepCamera(t, real);
+    this.stepLook(t);
     this.stepLoupe(t, real);
     this.stepVeil(t, real);
     if (t >= M.end) this.done = true;
@@ -332,22 +354,31 @@ export class Morning {
     const g = this.garden;
     const up = smooth(M.rise, M.loupeIn, t); // the rise toward the hub's own settings
     // Dawn brightens as the image opens; the low views a little darker than the hub (they look
-    // into the sky), easing to the hub's exposure as the camera rises over the leaf.
-    g.expo = (0.66 + 0.1 * smooth(M.reveal, 8, t)) * (1 - up) + 1.22 * up;
+    // into the sky). Through the rise the pale blade fills the frame: the exposure holds, and comes
+    // up to the hub's only as the dark ground round the leaf comes into view (the hub's exposure is
+    // balanced for that ground), so the light never flares on the way up.
+    const expoUp = smooth(M.loupeIn, M.end - 0.4, t);
+    const low = 0.66 + 0.1 * smooth(M.reveal, 8, t);
+    g.expo = (low + (0.8 - low) * up) * (1 - expoUp) + 1.22 * expoUp;
     g.farGain = 0.8 + (0.37 - 0.8) * up;
-    // A firmer curve for the low views (dawn light across the leaf has depth); the hub's own as
-    // the camera rises.
+    // A firmer curve for the low views (dawn light across the leaf has depth), held through the
+    // rise; the hub's own once the hub's frame is nearly there.
     const lu = this.intro.look?.lens?.uniforms;
-    if (lu) lu.uContrast.value = 0.36 + (0.24 - 0.36) * up;
-    g.u.uGraze.value = 0.1 + 0.9 * up;
+    if (lu) lu.uContrast.value = 0.36 + (0.32 - 0.36) * up + (0.24 - 0.32) * smooth(M.loupeIn + 1, M.end - 0.3, t);
+    // The silver sheen of the hairs builds at grazing angles: let in only once the view is steep.
+    g.u.uGraze.value = 0.1 + 0.9 * smooth(M.rise + 3, M.rise + 5.5, t);
     g.u.uYard.value = 1 - smooth(M.rise + 2.5, M.loupeIn + 1.5, t);
-    // The child leans in: the sky dims (15% at most) and the top of the frame darkens.
-    g.skyOcc = 0.55 * smooth(M.lean + 0.5, M.enter, t) * (1 - smooth(M.settle, M.rise + 1, t)) + smooth(M.rise + 1, M.loupeSettle, t);
-    g.shadeTop = 0.85 * smooth(M.lean + 0.6, M.enter, t) * (1 - smooth(M.settle + 0.5, M.rise + 1.5, t));
+    // The child leans in: the sky dims (15% at most) and the top of the frame darkens; then, as we
+    // come up into their gaze, they lean in close over the leaf and the sky dims by 15%, a visible
+    // step before the glass arrives.
+    g.skyOcc = 0.55 * smooth(M.lean + 0.5, M.enter, t) * (1 - smooth(M.settle, M.rise + 1, t)) + smooth(M.rise + 3, M.loupeIn + 0.6, t);
+    g.shadeTop = 0.94 * smooth(M.lean + 0.9, M.enter, t) * (1 - smooth(M.settle + 0.5, M.rise + 1.5, t));
     // Depth of field: a macro lens's, focused on the bead; it closes as the camera rises (from
     // overhead the leaf lies all at one depth, as in the hub).
     const camD = this.cam.d;
-    g.dof.A = 1.6 * (1 - smooth(M.rise + 1.0, M.loupeIn - 0.4, t));
+    // (Wider while the camera is farther out, so the far margin and its teeth melt as they do close
+    // in: the look holds through the push.)
+    g.dof.A = 1.6 * clamp(Math.sqrt(camD / 13), 1, 1.7) * (1 - smooth(M.rise + 1.0, M.loupeIn - 0.4, t));
     g.dof.focus = Math.max(camD - this.beadR * 0.35, 1);
     // Keep a slab as deep as the bead sharp: the subject, never softened.
     g.dof.slab = Math.abs(1 / Math.max(camD - this.beadR, 0.5) - 1 / g.dof.focus);
@@ -374,16 +405,22 @@ export class Morning {
     let sob = 0.12 * Math.sin((t * Math.PI * 2) / 3.2) * (1 - lean);
     const s = t - M.sob;
     if (s > 0 && s < 1.0) sob += Math.sin(Math.PI * clamp(s / 0.45, 0, 1)) * 0.9 + Math.sin(Math.PI * clamp((s - 0.45) / 0.5, 0, 1)) * 0.6;
-    f.pose({ hug: (1 - wipe) * (1 - lean), wipe: wipe * (1 - lean), lean }, sob);
+    const w = this.weights;
+    w.hug = (1 - wipe) * (1 - lean);
+    w.wipe = wipe * (1 - lean);
+    w.lean = lean;
+    f.pose(w, sob);
     // Brass in the lap catches the sky as the shoulders shake.
     f.glint = Math.max(0, Math.sin(Math.PI * clamp((t - M.sob - 0.2) / 0.7, 0, 1))) * 0.9;
     // Leaning over the leaf: the child turns toward it and comes over it, out of the bead's sight.
-    f.root.set(320 - 280 * lean, -175 + 175 * lean, -1200 + 800 * lean);
+    f.root.copy(SIT_ROOT).lerp(LEAN_ROOT, lean);
     f.facing = Math.PI - (Math.PI / 2) * lean;
     f.apply();
-    u.uSit.value = 1 - smooth(M.lean + 1.4, M.lean + 2.9, t);
+    // The sitting figure has gone from the drops before the leaning one comes in over the leaf (two
+    // figures never share the drop).
+    u.uSit.value = 1 - smooth(M.lean + 1.5, M.lean + 2.5, t);
     // Over the leaf the child is the hub's silhouette: head and shoulders over the bead.
-    u.uChild.value = smooth(M.lean + 1.2, M.enter, t);
+    u.uChild.value = smooth(M.lean + 2.5, M.enter + 0.6, t);
   }
 
   // The tear: the fall (world time), the neck, the ringing, the satellite.
@@ -430,23 +467,27 @@ export class Morning {
     this.beadR = Rm;
     if (ringing) {
       g.setTearBead(null);
-      g.setMerge({
-        bead: _q4a.set(cB.x, cB.y, cB.z, rB),
-        tear: _q4b.set(cT.x, cT.y, cT.z, rT),
-        k,
-        merged: _q4c.set(Cm.x, Cm.y, Cm.z, Rm),
-        ring: _v.set(a2, a3, blend),
-      });
+      const md = this.mergeDesc;
+      md.bead.set(cB.x, cB.y, cB.z, rB);
+      md.tear.set(cT.x, cT.y, cT.z, rT);
+      md.k = k;
+      md.merged.set(Cm.x, Cm.y, Cm.z, Rm);
+      md.ring.set(a2, a3, blend);
+      g.setMerge(md);
     } else {
       g.setMerge(null);
       g.setTearBead(Cm, Rm);
     }
-    // The satellite: pinched off the top as the first stretch recoils; it hops and falls back.
+    // The satellite: pinched off the top of the neck as the first stretch recoils (it grows out of
+    // the surface, then parts from it), hops and falls back in.
     const s0 = M.hold + 0.25, s1 = M.ring + 0.55;
     if (t > s0 && t < s1) {
       const p = (t - s0) / (s1 - s0);
+      const pinch = smooth(0, 0.14, p);
+      const rs = 0.15 * pinch;
+      const top = Cm.y + Rm * (1 + a2 + a3);
       const hop = 4 * p * (1 - p) * 1.7;
-      g.setSatellite(_v.set(0.25 * p, Cm.y + Rm * (1 + RING.a2 * 0.6) + 0.12 + hop, 0.1 * p), 0.15 * smooth(0, 0.08, p));
+      g.setSatellite(_v.set(0.25 * p, top + rs * (2 * pinch - 1) + hop, 0.1 * p), Math.max(rs, 0.004));
     } else g.setSatellite(null);
   }
 
@@ -493,8 +534,11 @@ export class Morning {
     const tu = smooth(60, 88, c.el);
     c.up.set(0, 1 - tu, tu).normalize();
     cam.up.copy(c.up);
-    // The tilt up: the target rises 10 mm above the bead (and 3 back).
-    c.look.copy(C).add(_a.set(0, 4.0 * c.lookUp, -1.2 * c.lookUp));
+    // The tilt up: the target rises 4 mm above the bead (and 1.2 back). In the low views the bead sits
+    // a little below the middle of the frame, for headroom: the doorway's glow and the soft figure
+    // in it at the top of the frame.
+    const head = c.d * HEADROOM * (1 - smooth(M.rise, M.rise + 2.5, t));
+    c.look.copy(C).add(_a.set(0, 4.0 * c.lookUp + head, -1.2 * c.lookUp));
     cam.lookAt(c.look);
     cam.updateMatrixWorld();
     g.focus = Math.max(c.d - this.beadR, 0.5);
@@ -614,15 +658,20 @@ const _a = new THREE.Vector3();
 const _b = new THREE.Vector3();
 const _c = new THREE.Vector3();
 const _d = new THREE.Vector3();
-const _q4a = new THREE.Vector4();
-const _q4b = new THREE.Vector4();
-const _q4c = new THREE.Vector4();
 
 // The notebook's first page: plays The First Morning in the game's own composer, then leaves the
-// player in the hub with the lens in hand (and from there, as on first launch, the dive). Takes what
-// the Intro takes (story §6.1), plus onHub and autoDive; returns the Intro, which the game loop
-// drives while `intro.active`. Call it from the page's click (or key) handler: it starts at once,
-// with no pre-roll, and the sound starts inside that gesture.
+// player in the hub with the lens in hand: the run select for the next morning. Takes what the Intro
+// takes (story §6.1), plus:
+//   onHub(intro)          the hub has taken over (the morning ended, or was skipped);
+//   onDive(source, intro) the player dives from the hub; return true to run the dive yourself (the
+//                         hub holds until you call intro.finish());
+//   replay (true)         otherwise the dive is the 3 s replay dive (story §5.3): straight into the
+//                         game at the crossing, never the first launch's MicroIntro scenes (the walled
+//                         hero, the salt front, shot 6: the lineage's cell is already soft);
+//   autoDive (false)      the glass waits in the hub for the player;
+//   audio                 the first launch's IntroAudio, if it still plays (its tide): it gives way.
+// Returns the Intro, which the game loop drives while `intro.active`. Call it from the page's click
+// (or key) handler: it starts at once, with no pre-roll, and the sound starts inside that gesture.
 export function playFirstMorning(deps) {
-  return new Intro({ preroll: false, ...deps, Morning });
+  return new Intro({ preroll: false, autoDive: false, replay: true, ...deps, Morning });
 }
