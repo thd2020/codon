@@ -116,9 +116,6 @@ const FIRST_SIGMA = 1.2;
 // brightness]. The monomers leaving a vesicle and the motes coming in through a PTS are drawn to
 // match, so where the metabolism's own bead takes over nothing changes size.
 const C_BEAD = { glucose: [0.0095, 2.2, 1.1], aminoAcid: [0.0085, 2.8, 1.4] };
-// The glucose motes are that bead's colour and value; out in the water, unveiled by the cell's
-// films, they are drawn this much brighter so the two read alike (matched on screen).
-const MOTE_LIFT = 1.0;
 
 // Protein food is coral, turned off METABOLITE.protein's pink so it never merges with the pinks of
 // the plasmid and the vesicle's lumen.
@@ -428,8 +425,10 @@ export class Feeding {
     this.taken = []; // motes on their way to a transporter
     this.takenPool = [];
     // A mote is the metabolism's glucose bead out in the water: its colour (the legend's) at its
-    // brightness, MOTE_LIFT more to make up for the water's veil over it
-    this.sugar = this.cGlucose.clone().multiplyScalar(C_BEAD.glucose[2] * MOTE_LIFT);
+    // brightness. The water veils it no more than the cell's films veil the bead (on screen a mote's
+    // core and a newborn glucose bead in the cell both come out within a few levels of #fef0b9,
+    // the legend's #f3e6b0 lit), so it needs no lift.
+    this.sugar = this.cGlucose.clone().multiplyScalar(C_BEAD.glucose[2]);
     for (let i = 0; i < n; i++) {
       this.mSeed[i] = this.rng() * 100;
       this.mSize[i] = 0.014 + this.rng() * 0.005;
