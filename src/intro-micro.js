@@ -688,7 +688,7 @@ export class MicroIntro {
     mk(this.inView(1.9, 70, 21, 8), u1.clone().multiplyScalar(0.8).addScaledVector(r1, -0.35).addScaledVector(f1, -0.5), 1000, 8, 5);
     // The pollen grain: a planet we pass on the way down, low on the left.
     this.pollen = new THREE.Mesh(new THREE.SphereGeometry(9, 96, 64), propMaterial(pollenFragment, water.dome, {
-      uLumen: { value: sceneColor(0xe4c99a) },
+      uLumen: { value: sceneColor(0xe8d3aa) },
       uMurus: { value: sceneColor(0xf8f1df) },
       uFade: { value: 0 },
     }));

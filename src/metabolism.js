@@ -303,8 +303,9 @@ export class Ledger {
 
 // ------------------------------------------------------------------------------------- beads
 const K = { glucose: 0, hexose: 1, triose: 2, pyruvate: 3, acetyl: 4, tca: 5, nadh: 6, qh2: 7, proton: 8, atp: 9, o2: 10, co2: 11, ferment: 12, amino: 13, nh3: 14 };
-// How each kind is drawn: colour, radius up close (µm), smallest radius on screen (px, so a bead
-// stays a clear dot from the default camera; 0: none), brightness, form and a white-hot core.
+// How each kind is drawn: colour, radius up close (µm), smallest radius on screen (px of a view
+// FLOOR_VIEW px tall, so a bead stays a clear dot from the default camera, 6 µm off, at any
+// resolution; 0: none), brightness, form and a white-hot core.
 // Beads are luminous pearls, drawn lighter than the darker enzyme lumps they visit. They are told
 // apart by value and shape as well as hue:
 //   ATP is the one saturated gold, bigger than the rest, with a white-hot core;
@@ -315,22 +316,23 @@ const K = { glucose: 0, hexose: 1, triose: 2, pyruvate: 3, acetyl: 4, tca: 5, na
 //   H+ cyan specks; the gases and NH3 plain greys and blues.
 // A moving comet bead stretches into a teardrop along its path (one instance, no trailing pearls).
 const ROUND = 0, COMET = 1, LOZENGE = 2;
+const FLOOR_VIEW = 540; // px: the view height the smallest sizes below are given for
 const STYLE = [
-  [0xf3e6b0, 0.0095, 2.2, 1.1, COMET, 0], // glucose
-  [0xffb27a, 0.009, 2.8, 1.3, COMET, 0], // glucose-6-P .. fructose-1,6-bisP
-  [0xffb27a, 0.0085, 2.7, 1.3, COMET, 0], // trioses .. PEP
-  [0xffb27a, 0.0085, 2.7, 1.3, COMET, 0], // pyruvate
-  [0xff9cc8, 0.009, 2.8, 1.3, COMET, 0], // acetyl-CoA
-  [0xff9cc8, 0.009, 2.8, 1.3, COMET, 0], // the TCA cycle's intermediates
-  [0x2f6ff0, 0.0085, 2.8, 1.45, COMET, 0], // NADH
-  [0xcdb8ff, 0.0085, 2.6, 1.3, LOZENGE, 0], // QH2
+  [0xf3e6b0, 0.0095, 3.0, 1.1, COMET, 0], // glucose
+  [0xffb27a, 0.009, 3.5, 1.3, COMET, 0], // glucose-6-P .. fructose-1,6-bisP
+  [0xffb27a, 0.0085, 3.4, 1.3, COMET, 0], // trioses .. PEP
+  [0xffb27a, 0.0085, 3.4, 1.3, COMET, 0], // pyruvate
+  [0xff9cc8, 0.009, 3.5, 1.3, COMET, 0], // acetyl-CoA
+  [0xff9cc8, 0.009, 3.5, 1.3, COMET, 0], // the TCA cycle's intermediates
+  [0x2f6ff0, 0.0085, 3.5, 1.45, COMET, 0], // NADH
+  [0xcdb8ff, 0.0085, 3.3, 1.3, LOZENGE, 0], // QH2
   [METABOLITE.proton, 0.0048, 0, 1.6, ROUND, 0], // H+: a fine sparkle, there are many (drawn only up close)
-  [0xffcc1a, 0.011, 3.7, 1.75, COMET, 1], // ATP
-  [0x7fc2f2, 0.007, 2.0, 1.15, ROUND, 0], // O2
-  [0xb3bccb, 0.007, 2.0, 1.05, ROUND, 0], // CO2
-  [METABOLITE.ferment, 0.0075, 2.5, 1.2, ROUND, 0], // formate, acetate, ethanol
-  [METABOLITE.aminoAcid, 0.0085, 2.8, 1.4, COMET, 0], // amino acids
-  [0xb3bccb, 0.0065, 2.0, 1.05, ROUND, 0], // NH3, grey like CO2
+  [0xffcc1a, 0.011, 4.1, 1.75, COMET, 1], // ATP
+  [0x7fc2f2, 0.007, 2.6, 1.15, ROUND, 0], // O2
+  [0xb3bccb, 0.007, 2.6, 1.05, ROUND, 0], // CO2
+  [METABOLITE.ferment, 0.0075, 3.1, 1.2, ROUND, 0], // formate, acetate, ethanol
+  [METABOLITE.aminoAcid, 0.0085, 3.5, 1.4, COMET, 0], // amino acids
+  [0xb3bccb, 0.0065, 2.6, 1.05, ROUND, 0], // NH3, grey like CO2
 ];
 // The legend: one row per colour family, the colours exactly the beads'.
 const LEGEND = [
@@ -488,9 +490,10 @@ function pdhGeometry(r) {
 
 // The beads' material: tokenMaterial (so they flow with the cell and share its light and fog) with
 // two extras per bead from the attribute aShape: x stretches the back half (local -z) into a
-// comet's tail, 1 = round; y lights a white-hot core (ATP). Normals follow non-uniform instance
-// scales (QH2's lozenge). If tokenMaterial's shader ever changes so the patch no longer applies,
-// the beads stay plain round pearls.
+// comet's tail, 1 = round; y lights a white-hot core (ATP), kept to the middle so the bead still
+// reads as gold from afar rather than as a white disc in a gold ring. Normals follow non-uniform
+// instance scales (QH2's lozenge). If tokenMaterial's shader ever changes so the patch no longer
+// applies, the beads stay plain round pearls.
 function beadMaterial(shape) {
   const m = tokenMaterial({ shape });
   const V0 = 'vec4 wp = modelMatrix * instanceMatrix * vec4(position, 1.0);';
@@ -518,7 +521,7 @@ function beadMaterial(shape) {
     .replace(N0, 'vN = normalize(mat3(modelMatrix) * (transpose(inverse(mat3(instanceMatrix))) * nn));');
   m.fragmentShader = m.fragmentShader
     .replace(VAR, `varying float vCore; ${VAR}`)
-    .replace(F0, `${F0}\n        c = mix(c, vec3(2.4, 2.3, 2.0), vCore * smoothstep(0.62, 0.95, facing));`);
+    .replace(F0, `${F0}\n        c = mix(c, vec3(2.4, 2.3, 2.0), vCore * smoothstep(0.8, 0.98, facing));`);
   return m;
 }
 
@@ -570,7 +573,10 @@ export class Metabolism {
     this.nWaiting = 0;
     this.activity = { glycolysis: 0.15, tca: 0.15, pdh: 0 };
     this.camera = null;
-    this.pxAngle = 0.0014;
+    // Radians per pixel of a view FLOOR_VIEW px tall, the unit of the beads' smallest sizes (Feeding
+    // sizes its motes by it too, to match them), and per pixel of the real screen.
+    this.pxAngle = (2 * Math.tan((42 * Math.PI) / 360)) / FLOOR_VIEW;
+    this.screenAngle = this.pxAngle;
     this.rate = { glucose: 0, atp: 0, protons: 0 };
     this.last = { glucose: 0, atp: 0, protons: 0 };
     this.state = {
@@ -700,8 +706,9 @@ export class Metabolism {
     this.base = STYLE.map(([hex]) => new THREE.Color(hex));
     this.mesh = null;
     if (!this.hero.body || !this.hero.shape) return; // headless: the ledger and the beads still run
-    // One instance per bead. Beads are a few to a dozen pixels across: 80 triangles are plenty.
-    const geo = new THREE.IcosahedronGeometry(1, 1);
+    // One instance per bead. Beads are a few to a dozen pixels across in a 540 px view, and their
+    // floor grows with the screen: 320 triangles keep a big one's edge round on a 4K display.
+    const geo = new THREE.IcosahedronGeometry(1, 2);
     const shapeAttr = new THREE.InstancedBufferAttribute(new Float32Array(n * 2), 2);
     shapeAttr.setUsage(THREE.DynamicDrawUsage);
     geo.setAttribute('aShape', shapeAttr);
@@ -716,7 +723,11 @@ export class Metabolism {
     // The camera, for the beads' smallest size on screen (read on the next update).
     mesh.onBeforeRender = (renderer, scene, camera) => {
       this.camera = camera;
-      if (camera.isPerspectiveCamera) this.pxAngle = (2 * Math.tan((camera.fov * Math.PI) / 360)) / Math.max(renderer.domElement.height, 1);
+      if (camera.isPerspectiveCamera) {
+        const span = 2 * Math.tan((camera.fov * Math.PI) / 360);
+        this.pxAngle = span / FLOOR_VIEW;
+        this.screenAngle = span / Math.max(renderer.domElement.height, 1);
+      }
     };
     this.hero.body.add(mesh);
     this.mesh = mesh;
@@ -1773,16 +1784,20 @@ export class Metabolism {
     const mesh = this.mesh;
     if (!mesh) return;
 
-    // µm per pixel at the camera's distance from the cell: beads keep a smallest size on screen.
-    let px = 0.0085; // about 6 µm away
+    // µm per pixel at the camera's distance from the cell. Beads keep a smallest size on screen,
+    // given in pixels of a view FLOOR_VIEW px tall (px): a share of the picture, so a bead reads as
+    // well on a large or high-density screen as in a small window, where real pixels would shrink
+    // it to a speck. pxScreen: per real pixel.
+    let px = 0.0085, pxScreen = 0.0085; // about 6 µm away
     if (this.camera) {
       this.hero.body.getWorldPosition(_a);
-      const scale = this.hero.group?.scale.x ?? 1;
-      px = (this.pxAngle * this.camera.position.distanceTo(_a)) / scale;
+      const d = this.camera.position.distanceTo(_a) / (this.hero.group?.scale.x ?? 1);
+      px = this.pxAngle * d;
+      pxScreen = this.screenAngle * d;
     }
-    // The H+ circuit is drawn only while an H+ bead is more than a speck (about 2 px across); from
-    // further away the periplasm's glow carries Δp.
-    this.hLod = this.camera ? smooth(1.6, 2.6, (2 * STYLE[K.proton][1]) / px) : 1;
+    // The H+ circuit is drawn only while an H+ bead is more than a speck (about 2 real pixels
+    // across); from further away the periplasm's glow carries Δp.
+    this.hLod = this.camera ? smooth(1.6, 2.6, (2 * STYLE[K.proton][1]) / pxScreen) : 1;
     const dn = shape.uDentN?.value ?? [];
     this.dents = dn.some((N) => N.w > 0);
 

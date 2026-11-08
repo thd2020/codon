@@ -1132,7 +1132,14 @@ export class Intro {
       g.portalM = null;
       let gap;
       if (td < DIVE.push) gap = logLerp(SKIN.start, SKIN.end, (td - DIVE.sink) / (DIVE.push - DIVE.sink));
-      else gap = logLerp(SKIN.end, SKIN.last, smooth(DIVE.push, DIVE.cross, td));
+      else {
+        // The last approach leaves the push at the push's own pace and settles onto the skin (a
+        // monotone Hermite ease-out), so the frame keeps sinking into the blur instead of stopping
+        // dead at the push's end and creeping for two seconds.
+        const u = clamp((td - DIVE.push) / (DIVE.cross - DIVE.push), 0, 1);
+        const m = Math.min(3, (Math.log(SKIN.start / SKIN.end) / (DIVE.push - DIVE.sink)) * (DIVE.cross - DIVE.push) / Math.log(SKIN.end / SKIN.last));
+        gap = logLerp(SKIN.end, SKIN.last, (u * u * u - 2 * u * u + u) * m + (3 - 2 * u) * u * u);
+      }
       // A slow turn over the whole push, so the leaf below swims rather than slides, and a slow
       // swing of the axis onto the crown's glow side (see PUSH).
       const spin = 0.12 * smooth(DIVE.sink, DIVE.cross, td);

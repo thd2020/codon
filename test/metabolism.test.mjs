@@ -436,6 +436,24 @@ console.log('\n# the TCA cycle is drawn once');
   check('once it runs: CellPass stream', h.volume.tca.stream, 0);
 }
 
+console.log('\n# beads keep a smallest size on screen, a share of the view at any resolution');
+{
+  const { m } = fresh();
+  const i = m.spawn(9, 14, new THREE.Vector3(0, 0, 0)); // an ATP bead, parked
+  m.hold(i, 10, 0);
+  m.age[i] = 1;
+  m.camera = { position: new THREE.Vector3(0, 0, 6) }; // the game's start distance
+  const span = 2 * Math.tan((42 * Math.PI) / 360); // the game camera's view height at 1 µm
+  const radius = (screenHeight) => {
+    m.screenAngle = span / screenHeight;
+    m.draw();
+    return m.mesh.instanceMatrix.array[i * 16] / m.size[i];
+  };
+  const px540 = (span / 540) * 6; // µm per pixel of a 540 px view, 6 µm off
+  between('ATP bead radius at 6 µm (px of a 540 px view)', radius(540) / px540, 3.5, 5);
+  check('...the same share of a 2160 px screen (µm)', radius(2160), radius(540), 1e-9);
+}
+
 console.log('\n# gold means ATP: the complexes keep off the beads’ colours');
 {
   const { h, m } = fresh();
