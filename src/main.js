@@ -13,6 +13,7 @@ import { Feeding } from './feeding.js';
 import { Hud } from './hud.js';
 import { composeLook } from './lens.js';
 import { ORGANELLE } from './palette.js';
+import { Intro } from './intro.js';
 import './style.css';
 
 const params = new URLSearchParams(location.search);
@@ -101,6 +102,14 @@ function resize() {
 addEventListener('resize', resize);
 resize();
 
+// The first-launch opening (docs/design/story.md §5: the garden, the dive, the soft one, the
+// hand-over to this very frame). It plays on first launch or with ?intro; never with ?nointro, nor
+// in headless ?frames renders unless ?intro asks. Built after composeLook (it adds its own passes)
+// and resize(). While it is active it owns the camera, the hero, the water and the interface.
+const intro = Intro.shouldPlay(params)
+  ? new Intro({ renderer, composer, look, scene, camera, controls, cellPass, water, hero, neighbours, player, hud, feeding, params, iconUrl: `${import.meta.env.BASE_URL}brand/cell-icon.svg` })
+  : null;
+
 // ?frames=N renders N fixed steps and stops, for screenshots on slow software renderers.
 const maxFrames = +params.get('frames') || Infinity;
 let frames = 0;
@@ -111,27 +120,39 @@ function frame(now) {
   const real = maxFrames < Infinity ? 1 / 60 : Math.min(timer.getDelta(), 1 / 20);
   if (++frames >= maxFrames) renderer.setAnimationLoop(null);
   window.__frames = frames;
-  const dt = real * (player.inspect ? 0.25 : 1);
+  // World time runs at the opening's pace while it plays (slow motion, the time-lapse); inspect's
+  // slow motion only once the game has the cell.
+  const opening = !!intro?.active;
+  const dt = real * (opening ? intro.timeScale : player.inspect ? 0.25 : 1);
   t += dt;
   clock.uTime.value = t;
   if (lens.uniforms.uTime) lens.uniforms.uTime.value = t;
 
-  const drive = player.update(dt);
-  metabolism.update(dt, { thrust: player.requested, oxygen: feeding.state.oxygen });
-  player.motorPower = metabolism.state.motorPower;
-  hero.update(dt, drive);
-  feeding.update(dt, { keys: player.keys, inspect: player.inspect });
-  neighbours.update(dt);
-  player.follow(real);
-  hud.zoom(real, camera, controls.target, player.inspect);
-  controls.update();
+  if (opening) {
+    intro.update(real);
+    // In the Garden (millimetres) the drop isn't drawn at all.
+    if (!intro.inGarden) neighbours.update(dt);
+  } else {
+    const drive = player.update(dt);
+    metabolism.update(dt, { thrust: player.requested, oxygen: feeding.state.oxygen });
+    player.motorPower = metabolism.state.motorPower;
+    hero.update(dt, drive);
+    feeding.update(dt, { keys: player.keys, inspect: player.inspect });
+    neighbours.update(dt);
+    player.follow(real);
+    hud.zoom(real, camera, controls.target, player.inspect);
+    controls.update();
+  }
 
-  water.update(camera, camera.position.distanceTo(hero.group.position));
-  hud.update(real, camera, player, metabolism.state, feeding.state);
+  if (!intro?.inGarden) {
+    // While the opening drives the camera it says where the water's depth of field should focus.
+    water.update(camera, intro?.focus ?? camera.position.distanceTo(hero.group.position));
+    hud.update(real, camera, player, metabolism.state, feeding.state);
+  }
 
   composer.render();
   labels.render(scene, camera);
 }
 renderer.setAnimationLoop(frame);
 
-window.codon = { scene, camera, hero, player, controls, metabolism, feeding, cellPass, renderer };
+window.codon = { scene, camera, hero, player, controls, metabolism, feeding, cellPass, renderer, intro };

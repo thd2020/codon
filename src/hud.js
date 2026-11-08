@@ -556,6 +556,14 @@ export class Hud {
     if (!(fade > 0)) this.master = this.masterGoal;
   }
 
+  // Where the 1 µm bar is on screen, as of the last update(): out.x, out.y the middle of its line
+  // (CSS px), out.z its length (CSS px). The opening's stepping scale bar settles onto it in the
+  // hand-over, so the one becomes the other in place.
+  barPlace(out) {
+    const k = this.k, box = this.bar.material.uniforms.uBox.value;
+    return out.set(k.cx, k.cy - box.y / k.upp, 1 / k.upp);
+  }
+
   // The title hangs in the water 8 µm beyond the cell, its top left corner near the top left of the
   // starting view, clear of the ring (smaller on narrow windows).
   placePlaque(camera, target) {
