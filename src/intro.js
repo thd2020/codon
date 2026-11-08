@@ -342,7 +342,10 @@ export class Intro {
     }
   }
 
-  constructor({ renderer, composer, look, scene, camera, controls, cellPass, water, hero, neighbours, player, hud, params, MicroIntro = null, iconUrl } = {}) {
+  // Morning: The First Morning's director (morning.js, passed in by playFirstMorning()). With it the
+  // intro plays the notebook's first page (shots 0 -> 1 -> 2 -> 3) and then continues from the hub,
+  // lens in hand, exactly as the first launch does from 0:08.
+  constructor({ renderer, composer, look, scene, camera, controls, cellPass, water, hero, neighbours, player, hud, params, MicroIntro = null, iconUrl, Morning = null } = {}) {
     Object.assign(this, { renderer, composer, look, scene, camera, controls, cellPass, water, hero, neighbours, player, hud });
     params = params ?? new URLSearchParams(location.search);
     this.params = params;
@@ -352,8 +355,9 @@ export class Intro {
     this.active = true;
     this.timeScale = 1;
     this.focus = null;
-    this.state = 'preroll'; // preroll -> garden -> micro -> done; 'blink' while skipping
-    this.t = 0; // the opening clock (real seconds since 0:00)
+    this.state = 'preroll'; // preroll -> [morning ->] garden -> micro -> done; 'blink' while skipping
+    this.t = 0; // the opening clock (real seconds since 0:00); in The First Morning, the morning's
+    this.elapsed = 0; // real seconds since 0:00, whatever the clocks did (for seeking)
     this.diveAt = null; // opening-clock time the dive started
     this.td = 0; // the dive clock
     this.tm = 0; // seconds since MicroIntro.start()
@@ -426,13 +430,19 @@ export class Intro {
     if (player && 'enabled' in player) player.enabled = false;
 
     this.cues = this.buildCues();
+    if (Morning) {
+      this.morning = new Morning(this);
+      // The morning has its own cue sheet; the first launch's arrival cues (0:00 to 0:08) are its.
+      for (const c of this.cues) if (c.clock === 'open') c.done = true;
+      this.cues = [...this.morning.buildCues(), ...this.cues];
+    }
     this.bindInput();
     if (this.headless) this.start();
     else this.ui.showPre(true);
   }
 
   get inGarden() {
-    return this.state === 'preroll' || this.state === 'garden' || (this.state === 'blink' && !this.inMicro);
+    return this.state === 'preroll' || this.state === 'garden' || this.state === 'morning' || (this.state === 'blink' && !this.inMicro);
   }
 
   clockNow() {
@@ -596,8 +606,29 @@ export class Intro {
 
   start() {
     if (this.state !== 'preroll') return;
-    this.state = 'garden';
+    this.state = this.morning ? 'morning' : 'garden';
     this.t = 0;
+    this.morning?.start();
+  }
+
+  // The First Morning has ended (or was skipped): the hub, lens in hand, as the first launch has it
+  // at 0:08. The hub's own clock takes over from there (the pictogram, the dive by itself).
+  toHub() {
+    this.morning?.end();
+    const g = this.garden;
+    const h = this.hub;
+    this.state = 'garden';
+    this.t = T.control;
+    h.loupe.set(0, 0, 0);
+    h.vel.set(0, 0);
+    h.d = h.dGoal = LOUPE.rest;
+    h.following = false;
+    h.parallax.set(0, 0);
+    g.loupeOn = true;
+    g.skyOcc = 1;
+    g.schlieren = 0.5;
+    this.timeScale = 1;
+    for (const c of this.cues) if (c.clock === 'morning') c.done = true;
   }
 
   // Gamepad: left stick steers the glass, the triggers raise and lower it, A dives, B (held) skips.
@@ -653,7 +684,7 @@ export class Intro {
   runCues() {
     for (const c of this.cues) {
       if (c.done) continue;
-      const clock = c.clock === 'open' ? this.t : c.clock === 'dive' ? (this.diveAt != null && this.t >= this.diveAt ? this.td : -1) : this.state === 'micro' ? this.tm : -1;
+      const clock = c.clock === 'open' ? this.t : c.clock === 'morning' ? (this.state === 'morning' ? this.t : -1) : c.clock === 'dive' ? (this.diveAt != null && this.t >= this.diveAt ? this.td : -1) : this.state === 'micro' ? this.tm : -1;
       if (clock >= c.at) {
         c.done = true;
         // A MicroIntro that owns its sound plays the micro cues itself; their captions stay here.
@@ -697,7 +728,7 @@ export class Intro {
   // drawn: no far layer, no glass, no scene pass, no bloom; the veil draws the dawn on its own.
   drawGate() {
     if (!this.garden) return;
-    const hidden = this.state === 'preroll' || (this.state === 'garden' && this.veil.uniforms.uReveal.value <= 0 && this.veil.uniforms.uHold.value <= 0);
+    const hidden = this.state === 'preroll' || ((this.state === 'garden' || this.state === 'morning') && this.veil.uniforms.uReveal.value <= 0 && this.veil.uniforms.uHold.value <= 0);
     if (hidden === !this.drawing) return;
     this.drawing = !hidden;
     const L = this.look;
@@ -729,15 +760,26 @@ export class Intro {
       return;
     }
     this.t += real;
+    this.elapsed += real;
     this.pad = this.pollGamepad();
     this.audio.tick();
     this.ui.tickCaption(this.clockNow());
     this.stepSkip(real);
     if (this.state === 'blink') return this.stepBlink(real);
     this.runCues();
+    if (this.state === 'morning') return this.stepMorning(real);
     if (this.state === 'garden') this.stepGarden(real);
     else if (this.state === 'micro') this.stepMicro(real);
     this.stepVeil(real);
+  }
+
+  // ---------------------------------------------------------------------- The First Morning
+  // The morning drives the Garden, the camera and the veil itself; at its end the hub takes over.
+  stepMorning(real) {
+    const m = this.morning;
+    m.step(real);
+    this.timeScale = m.timeScale;
+    if (m.done) this.toHub();
   }
 
   // ----------------------------------------------------------------------------- Garden
@@ -1187,6 +1229,8 @@ export class Intro {
     }
     this.ui.setSkip(this.skipHold, x, y, r);
     if (this.skipHold >= 1) {
+      // Skipping The First Morning lands in the hub with the lens in hand (story §5.3).
+      this.blinkTo = this.state === 'morning' ? 'hub' : 'game';
       this.state = 'blink';
       this.blinkT = 0;
       this.landed = false;
@@ -1201,6 +1245,7 @@ export class Intro {
     const u = this.veil.uniforms;
     u.uDim.value = b < 0.3 ? smooth(0, 0.3, b) : 1 - smooth(0.3, 0.8, b);
     u.uFlash.value = Math.max(0, u.uFlash.value - real * 3);
+    if (this.blinkTo === 'hub') return this.stepBlinkHub(real);
     if (!this.landed && b >= 0.3) {
       this.landed = true;
       if (!this.inMicro) {
@@ -1227,6 +1272,32 @@ export class Intro {
     if (b >= 0.8) {
       u.uDim.value = 0;
       this.finish();
+    }
+  }
+
+  // The First Morning skipped: one blink, and the hub comes up under it, lens in hand.
+  stepBlinkHub(real) {
+    const b = this.blinkT;
+    const u = this.veil.uniforms;
+    if (!this.landed && b >= 0.3) {
+      this.landed = true;
+      this.toHub();
+      this.state = 'blink';
+      u.uGrad.value = 1;
+      u.uPoint.value = 0;
+      u.uReveal.value = 1;
+      u.uHold.value = 0;
+      // The morning's sound comes to where the hub has it: the garden, steady breath, the drone.
+      const a = this.audio;
+      a.setSlow?.(0, 0.4);
+      a.gardenIn(1);
+      a.setBreathing('steady');
+      a.droneIn(0.035, 2);
+    }
+    if (this.landed) this.stepGarden(real);
+    if (b >= 0.8) {
+      u.uDim.value = 0;
+      this.state = 'garden';
     }
   }
 
@@ -1313,6 +1384,7 @@ export class Intro {
       this.garden = null;
     }
     this.micro?.dispose?.();
+    this.morning?.dispose?.();
     this.ui.dispose();
     this.unbindInput();
   }

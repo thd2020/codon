@@ -116,7 +116,7 @@ const NOISE = /* glsl */ `
 const SKY = /* glsl */ `
   uniform vec3 uZenith, uSkyC, uHorizon, uGlow, uGround, uSun, uGlowDir;
   uniform vec3 uLightUp, uLightDown, uLightGlow;
-  uniform float uSkyOcc, uExpo;
+  uniform float uSkyOcc, uExpo, uGraze;
   vec3 skyColor(vec3 d) {
     float y = d.y;
     vec3 c = mix(uHorizon, uSkyC, smoothstep(0.02, 0.45, y));
@@ -146,9 +146,125 @@ const SKY = /* glsl */ `
     float dp = length(w - L * s);
     float b = max(R * abs(1.0 - s / (2.0 * R)), 0.14 * R);
     float core = min(pow(R / b, 2.0) * 0.8, 5.0);
-    float inBead = 1.0 - smoothstep(R * 0.92, R * 1.05, dp);
+    // (only near the bead: a low glow would otherwise draw the shadow out across the far leaf)
+    float inBead = (1.0 - smoothstep(R * 0.92, R * 1.05, dp)) * (1.0 - smoothstep(5.0 * R, 10.0 * R, s));
     float inCore = 1.0 - smoothstep(b * 0.75, b * 1.1, dp);
     return mix(1.0, mix(0.12, core, inCore), inBead);
+  }
+`;
+
+// The First Morning's yard, seen low across the leaf toward the house (relative to the tear bead, in
+// mm; the child and the house lie toward -z). The pot stands on the low ground; behind it the back
+// step rises to a terrace, and across the terrace the house wall catches the dawn glow, one window
+// lit warm from inside. Ray-traced: the beads refract it (sharp, upside down) and the far layer
+// draws it behind the leaf (blurred). The child sitting on the step is a figure of tapered capsules,
+// seen only through the drops, never directly. No face.
+const YARD = /* glsl */ `
+  uniform vec3 uWall, uWallLit, uWin, uStone, uGravel, uTerrace, uRoof, uYardHaze;
+  uniform vec4 uSitA[8], uSitB[8]; // the figure's limbs: endpoints (relative to the bead), radii in w
+  uniform vec4 uSitHead;           // head: centre, radius
+  uniform vec4 uSitGlint;          // the brass loupe in the lap: position, brightness
+  const float Y_LOW = -245.0, Y_STEP = -60.0, Z_STEP = -950.0, Z_HOUSE = -3500.0, Y_EAVE = 2700.0;
+  vec3 yardLit(vec3 alb, vec3 n) { return alb * skyLight(n); }
+  vec3 houseColor(vec3 p) {
+    // Stucco: lilac in the shade of the dawn sky, warming where the glow reaches it, and darker
+    // toward the ground. A window lit from inside, its frame and glazing bars soft (no lines).
+    vec3 alb = mix(uWall, uWallLit, 0.55 + 0.45 * vn2(p.xy * 0.002));
+    vec3 c = yardLit(alb, vec3(0.0, 0.0, 1.0)) * (0.75 + 0.25 * smoothstep(Y_STEP, 900.0, p.y));
+    vec2 w = p.xy - vec2(420.0, 700.0);
+    vec2 hw = vec2(620.0, 540.0);
+    vec2 e = abs(w) - hw;
+    float inWin = 1.0 - smoothstep(-30.0, 10.0, max(e.x, e.y));
+    // Glazing bars, as soft darker bands.
+    float bars = max(1.0 - smoothstep(14.0, 34.0, abs(w.x)), 1.0 - smoothstep(14.0, 34.0, abs(w.y - 90.0)));
+    // The room inside: warm, brighter toward a lamp low on the left.
+    vec3 room = uWin * (0.75 + 0.6 * exp(-dot(w - vec2(-260.0, -180.0), w - vec2(-260.0, -180.0)) / 120000.0));
+    c = mix(c, mix(room, c * 0.7, bars * 0.85), inWin);
+    // A second window further along, unlit: it mirrors the sky.
+    vec2 w2 = p.xy - vec2(-1700.0, 900.0);
+    float in2 = 1.0 - smoothstep(-30.0, 10.0, max(abs(w2.x) - 420.0, abs(w2.y) - 520.0));
+    c = mix(c, skyColor(normalize(vec3(0.15, 0.55, 1.0))) * 0.62, in2);
+    return c;
+  }
+  // The yard along a ray from ro (relative to the bead). sky: what the ray sees if it hits nothing.
+  vec3 yardColor(vec3 ro, vec3 d, vec3 sky) {
+    float tb = 1e9;
+    vec3 c = sky;
+    if (d.z < 0.0) {
+      float t = (Z_HOUSE - ro.z) / d.z;
+      vec3 p = ro + d * t;
+      if (p.y > Y_STEP - 1.0 && p.y < Y_EAVE) { tb = t; c = houseColor(p); }
+      else if (p.y >= Y_EAVE && p.y < Y_EAVE + 900.0 * (1.0 - abs(p.x) / 9000.0)) { tb = t; c = yardLit(uRoof, normalize(vec3(0.0, 0.8, 0.6))); }
+      // The step's riser, between the low ground and the terrace; its nosing a paler line of light.
+      t = (Z_STEP - ro.z) / d.z;
+      p = ro + d * t;
+      if (t > 0.0 && t < tb && p.y > Y_LOW && p.y < Y_STEP) {
+        tb = t;
+        vec3 alb = uStone * (0.92 + 0.12 * vn2(p.xy * 0.03));
+        c = yardLit(alb, vec3(0.0, 0.0, 1.0)) * (0.8 + 0.2 * smoothstep(Y_LOW, Y_STEP, p.y));
+        c += yardLit(uStone, vec3(0.0, 0.7, 0.7)) * 0.35 * smoothstep(Y_STEP - 22.0, Y_STEP - 4.0, p.y);
+      }
+    }
+    if (d.y < 0.0) {
+      float t = (Y_STEP - ro.y) / d.y;
+      vec3 p = ro + d * t;
+      if (t > 0.0 && t < tb && p.z < Z_STEP && p.z > Z_HOUSE) {
+        tb = t;
+        // Flagstones by the step, then dewy grass silvered by the sky.
+        vec3 alb = mix(uTerrace, uStone * 0.9, smoothstep(-1700.0, -1400.0, p.z));
+        alb *= 0.9 + 0.15 * vn2(p.xz * 0.004);
+        c = yardLit(alb, vec3(0.0, 1.0, 0.0));
+        c += skyColor(reflect(d, vec3(0.0, 1.0, 0.0))) * 0.1 * (1.0 - smoothstep(-1700.0, -1400.0, p.z));
+      }
+      t = (Y_LOW - ro.y) / d.y;
+      p = ro + d * t;
+      if (t > 0.0 && t < tb && p.z >= Z_STEP) {
+        tb = t;
+        c = yardLit(uGravel * (0.85 + 0.25 * vn2(p.xz * 0.05)), vec3(0.0, 1.0, 0.0));
+      }
+    }
+    if (tb < 1e8) c = mix(c, uYardHaze * uExpo, (1.0 - exp(-tb * 0.00011)) * 0.7);
+    return c;
+  }
+  // The child on the step, as the drops see it: a dark figure against the house and the sky.
+  vec3 sitFigure(vec3 ro, vec3 d, vec3 c) {
+    float m = 0.0, best = 0.0;
+    vec3 nb = vec3(0.0, 1.0, 0.0);
+    for (int i = 0; i < 8; i++) {
+      vec4 A = uSitA[i], Bc = uSitB[i];
+      if (A.w <= 0.0) continue;
+      vec3 ba = Bc.xyz - A.xyz, oa = ro - A.xyz;
+      float baba = dot(ba, ba), bard = dot(ba, d), baoa = dot(ba, oa), rdoa = dot(d, oa);
+      float s = clamp((baoa - bard * rdoa) / max(baba - bard * bard, 1e-6), 0.0, 1.0);
+      float t = max(bard * s - rdoa, 0.0);
+      vec3 q = oa + d * t - ba * s;
+      float dd = length(q);
+      float r = mix(A.w, Bc.w, s);
+      float soft = 0.006 * t;
+      float k = 1.0 - smoothstep(r - soft, r + soft, dd);
+      if (k > best) { best = k; nb = q / max(dd, 1e-3); }
+      m = max(m, k);
+    }
+    {
+      vec3 oc = ro - uSitHead.xyz;
+      float b = dot(oc, d);
+      float h = length(oc - d * b);
+      float t = -b;
+      float soft = 0.006 * max(t, 1.0);
+      float k = (1.0 - smoothstep(uSitHead.w - soft, uSitHead.w + soft, h)) * step(0.0, t);
+      if (k > best) { best = k; nb = normalize(oc - d * b); }
+      m = max(m, k);
+    }
+    // Lit from the sky above, a warm rim where the glow catches the edge.
+    vec3 sil = uChildCol * (0.72 + 0.5 * max(nb.y, 0.0));
+    sil += uLightGlow * vec3(1.0, 0.7, 0.5) * 0.35 * pow(max(dot(nb, glowL()), 0.0), 2.0) * uExpo;
+    c = mix(c, sil, m * uSit);
+    // The brass in the lap: a point that catches the sky.
+    vec3 og = ro - uSitGlint.xyz;
+    float bg = dot(og, d);
+    float hg = length(og - d * bg);
+    c += vec3(3.4, 2.6, 1.7) * uSitGlint.w * uSit * exp(-hg * hg / 220.0) * step(bg, 0.0);
+    return c;
   }
 `;
 
@@ -156,7 +272,7 @@ const SKY = /* glsl */ `
 // shoulders, the arm reaching down to the glass). Positions are relative to the tear bead. No face.
 const CHILD = /* glsl */ `
   uniform vec3 uHeadC, uHeadR, uBodyC, uBodyR, uArmA, uArmB, uChildCol, uB;
-  uniform float uChild;
+  uniform float uChild, uYard, uSit;
   float ellSoft(vec3 ro, vec3 rd, vec3 c, vec3 r) {
     vec3 o = (ro - c) / r, d = rd / r;
     float a = dot(d, d), b = dot(o, d), cc = dot(o, o) - 1.0;
@@ -172,8 +288,12 @@ const CHILD = /* glsl */ `
     float d = length(oa + rd * t - ba * s);
     return 1.0 - smoothstep(r * 0.92, r * 1.05, d);
   }
+  ${YARD}
   vec3 envColor(vec3 ro, vec3 d) {
     vec3 c = skyColor(d);
+    // The First Morning: the yard behind the plant, and the child sitting on the step.
+    if (uYard > 0.0) c = mix(c, yardColor(ro, d, c), uYard);
+    if (uSit > 0.0) c = sitFigure(ro, d, c);
     if (uChild <= 0.0 || d.y < 0.05) return c;
     float m = max(ellSoft(ro, d, uHeadC, uHeadR), ellSoft(ro, d, uBodyC, uBodyR));
     m = max(m, capSoft(ro, d, uArmA, uArmB, 26.0));
@@ -435,7 +555,7 @@ const leafFragment = /* glsl */ `
     // The silver hairs: a fine sheen, strongest where the blade turns away from the eye, and a
     // broad silvery shine where the pleats face the glow (the hairs catch it like brushed metal).
     float nv = clamp(dot(N, V), 0.0, 1.0);
-    col += uSheen * min(skyColor(reflect(-V, N)), vec3(1.4)) * (0.05 + 0.75 * pow(1.0 - nv, 2.5)) * uExpo;
+    col += uSheen * min(skyColor(reflect(-V, N)), vec3(1.4)) * (0.05 + 0.75 * uGraze * pow(1.0 - nv, 2.5)) * uExpo;
     float nh = max(dot(N, normalize(glowL() + V)), 0.0);
     col += vec3(0.95, 0.93, 0.9) * uLightGlow * (pow(nh, 8.0) * 0.38 + pow(nh, 40.0) * 0.3) * key * uExpo;
     // A waxy highlight from the bright part of the sky.
@@ -464,7 +584,7 @@ const shellFragment = /* glsl */ `
     float rho = length(p), phi = atan(p.y, p.x);
     float h = uShellH / uHairLen; // 0 at the blade, 1 at the hair tips
     // Hairs stand along the margin too, a soft silver fringe just beyond the edge.
-    float sd = rho - marginR(phi) - 0.45 * h;
+    float sd = rho - marginR(phi) - 0.45 * h * uGraze;
     float ds = mod(phi - uSinus + PI, TAU) - PI;
     if (cos(ds) > 0.0 && rho > 9.0) sd = max(sd, 0.07 * (rho - 9.0) - rho * abs(sin(ds)));
     if (sd > 0.0) discard;
@@ -494,7 +614,7 @@ const shellFragment = /* glsl */ `
       float cover = 0.88 * 3.14159 * r * r / (cell * cell);
       float fine = smoothstep(0.35, 1.0, pw / (2.0 * r));
       mask = mix(mask, cover, fine);
-      a = mask / max(nv, 0.22) + cover * 1.6 * (1.0 - nv) * fine;
+      a = mask / max(nv, 0.22 + 0.4 * (1.0 - uGraze)) + cover * 1.6 * (1.0 - nv) * fine * uGraze;
       a *= 1.0 - res;
     }
     if (uTop > 0.5 && res > 0.005) {
@@ -531,6 +651,9 @@ const shellFragment = /* glsl */ `
     col += uSun * pow(max(dot(normalize(uGlowDir + V), N), 0.0), 8.0) * 0.25 * uExpo;
     float dist = length(vWorld - cameraPosition);
     col = mix(col, uHaze, 1.0 - exp(-dist * uHazeK));
+    // Seen very low across the blade (The First Morning), the shells would show as stacked bands:
+    // there they fade, and the blade's own sheen carries the silver.
+    a *= mix(1.0, smoothstep(0.05, 0.4, nv), 1.0 - uGraze);
     gl_FragColor = vec4(col, clamp(a * 0.85, 0.0, 0.9));
   }
 `;
@@ -569,6 +692,37 @@ const beadFragment = /* glsl */ `
   varying vec3 vWorld, vC;
   varying float vR;
   varying vec4 vBead;
+#ifdef MERGE
+  // The tear meeting the bead (The First Morning), then the merged bead ringing in its first two shape
+  // modes: one surface, sphere-traced inside the proxy (vC, vR bound the march). uMA, uMB: the bead
+  // and the tear (centre, radius); uMK: how far the neck has grown (smooth-min width, mm); uRC: the
+  // merged bead (centre, radius); uRing: x, y the l = 2 and l = 3 amplitudes (fractions of the
+  // radius), z the blend from the pair to the ringing bead.
+  uniform vec4 uMA, uMB, uRC, uRing;
+  uniform float uMK;
+  float sdM(vec3 p) {
+    float a = length(p - uMA.xyz) - uMA.w;
+    float b = length(p - uMB.xyz) - uMB.w;
+    float k = max(uMK, 1e-4);
+    float h = clamp(0.5 + 0.5 * (b - a) / k, 0.0, 1.0);
+    float pair = mix(b, a, h) - k * h * (1.0 - h);
+    vec3 q = p - uRC.xyz;
+    float r = length(q);
+    float c = q.y / max(r, 1e-5);
+    float P2 = 0.5 * (3.0 * c * c - 1.0), P3 = 0.5 * (5.0 * c * c * c - 3.0 * c);
+    float ring = r - uRC.w * (1.0 + uRing.x * P2 + uRing.y * P3);
+    return mix(pair, ring, uRing.z);
+  }
+  vec3 nM(vec3 p) {
+    const vec2 e = vec2(0.003, 0.0);
+    return normalize(vec3(sdM(p + e.xyy) - sdM(p - e.xyy), sdM(p + e.yxy) - sdM(p - e.yxy), sdM(p + e.yyx) - sdM(p - e.yyx)));
+  }
+  #define BC uRC.xyz
+  #define BR uRC.w
+#else
+  #define BC vC
+  #define BR vR
+#endif
 
   // The salt field of the tear still mixing with the dew: broad, slow, curling layers. Only its low
   // frequencies are kept: schlieren are seen as a wavering of what lies behind, not as lines.
@@ -589,7 +743,7 @@ const beadFragment = /* glsl */ `
       vec3 bc = bladeColor(Q.xz, lp, bump);
       vec3 n = normalize(vec3(bump.x, 1.0, bump.y));
       // The blade under the bead, lit through the bead itself: the glow's focused core.
-      bc *= (skyHemi(n) * 1.08 + skyKey(n) * beadBeam(Q, vC, vR)) * uBladeLight;
+      bc *= (skyHemi(n) * 1.08 + skyKey(n) * beadBeam(Q, BC, BR)) * uBladeLight;
       c = mix(c, bc, m);
       // The silver hairs holding the bead up, seen magnified between it and the blade: each hair a
       // tapering glassy strand from the blade, leaning outward.
@@ -625,6 +779,31 @@ const beadFragment = /* glsl */ `
   void main() {
     vec3 ro = cameraPosition;
     vec3 rd = normalize(vWorld - ro);
+#ifdef MERGE
+    vec3 ob = ro - vC;
+    float bb = dot(ob, rd);
+    float hb = bb * bb - (dot(ob, ob) - vR * vR);
+    if (hb <= 0.0) discard;
+    float t = max(-bb - sqrt(hb), 0.0), tEnd = -bb + sqrt(hb);
+    float dmin = 1e9, tmin = t;
+    bool hit = false;
+    for (int i = 0; i < 64; i++) {
+      float sd = sdM(ro + rd * t);
+      float ang = sd / max(t, 0.01);
+      if (ang < dmin) { dmin = ang; tmin = t; }
+      if (sd < 0.0004 * t) { hit = true; break; }
+      t += max(sd * 0.9, 0.0005 * t);
+      if (t > tEnd) break;
+    }
+    if (!hit) t = tmin;
+    float alpha = hit ? 1.0 : clamp(0.5 - dmin / uPxAngle, 0.0, 1.0);
+    if (alpha <= 0.0) discard;
+    vec3 oc = ro - BC;
+    float dc = length(oc - rd * dot(oc, rd));
+    float pw = max(t, 0.01) * uPxAngle;
+    vec3 P = ro + rd * t;
+    vec3 N1 = nM(P);
+#else
     vec3 oc = ro - vC;
     float b = dot(oc, rd);
     float c = dot(oc, oc) - vR * vR;
@@ -637,6 +816,7 @@ const beadFragment = /* glsl */ `
     t = max(t, 0.0);
     vec3 P = ro + rd * t;
     vec3 N1 = normalize(P - vC);
+#endif
     float cosi = clamp(dot(-rd, N1), 0.0, 1.0);
 
     vec3 T1 = refract(rd, N1, 1.0 / 1.333);
@@ -645,16 +825,28 @@ const beadFragment = /* glsl */ `
     if (tear > 0.5 && uSchlieren > 0.0) {
       // The salt layers bend the light a little (salt water's index is higher): a smooth warp of
       // everything seen through the bead, and a soft +-2% in brightness where they are steepest.
-      vec3 qm = (P + T1 * vR - vC) / vR;
+      vec3 qm = (P + T1 * BR - BC) / BR;
       const float e = 0.09;
       float s0 = salt(qm, uTime);
       vec3 g = (vec3(salt(qm + vec3(e, 0, 0), uTime), salt(qm + vec3(0, e, 0), uTime), salt(qm + vec3(0, 0, e), uTime)) - s0) / e;
       T1 = normalize(T1 + uSchlieren * g * 0.05);
       lum = uSchlieren * 0.04 * (smoothstep(0.2, 1.6, length(g)) - 0.5);
     }
+#ifdef MERGE
+    // Out through the far side of the same surface.
+    float L = 0.03;
+    for (int i = 0; i < 40; i++) {
+      float sd = -sdM(P + T1 * L);
+      if (sd < 0.002) break;
+      L += max(sd * 0.9, 0.01);
+    }
+    vec3 P2 = P + T1 * L;
+    vec3 N2 = nM(P2);
+#else
     float L = -2.0 * dot(T1, N1) * vR;
     vec3 P2 = P + T1 * L;
     vec3 N2 = normalize(P2 - vC);
+#endif
     vec3 col = vec3(0.0);
     // Three indices for a faint dispersion; the blade below is traced once.
     vec3 T2g = refract(T1, -N2, 1.333);
@@ -672,7 +864,7 @@ const beadFragment = /* glsl */ `
     // A mote drifting in the tear bead, off to one side: a speck of pollen-dust lit from the glow,
     // translucent, brighter on its glow side.
     if (tear > 0.5 && uDust > 0.0) {
-      vec3 sp = vC + vR * vec3(-0.48 + 0.08 * sin(uTime * 0.11 + 1.0), 0.18 + 0.06 * sin(uTime * 0.07), 0.12 + 0.1 * cos(uTime * 0.09));
+      vec3 sp = BC + BR * vec3(-0.48 + 0.08 * sin(uTime * 0.11 + 1.0), 0.18 + 0.06 * sin(uTime * 0.07), 0.12 + 0.1 * cos(uTime * 0.09));
       vec3 w = sp - P;
       float tt = clamp(dot(w, T1), 0.0, L);
       vec3 off = P + T1 * tt - sp;
@@ -683,13 +875,14 @@ const beadFragment = /* glsl */ `
       vec3 mote = (skyLight(vec3(0.0, 1.0, 0.0)) * 0.9 + uLightGlow * 1.6) * vec3(1.0, 0.94, 0.84) * lit;
       thru = mix(thru, mote, body * 0.6 * uDust);
     }
-    thru *= (1.0 + lum) * mix(vec3(1.0), uWaterTint, clamp(L / (2.0 * vR), 0.0, 1.0));
+    thru *= (1.0 + lum) * mix(vec3(1.0), uWaterTint, clamp(L / (2.0 * BR), 0.0, 1.0));
     // Toward its edge a bead held up on hairs turns to quicksilver: rays that reach its underside
     // at a slant are turned back by the film of air the hairs hold under it, and show the sky.
-    float rr = dc / vR;
+    float rr = dc / BR;
     // Inside the rim a drop shows the dark, low world bent up into it: a deeper band, which gives
     // the bead its depth...
-    thru *= 1.0 - 0.3 * smoothstep(0.5, 0.82, rr) * (1.0 - smoothstep(0.86, 0.95, rr));
+    // (less so where the yard is seen through it: the inverted world there should read clearly)
+    thru *= 1.0 - 0.3 * (1.0 - 0.7 * uYard) * smoothstep(0.5, 0.82, rr) * (1.0 - smoothstep(0.86, 0.95, rr));
     // ...and at the very edge, a bead held up on hairs turns to quicksilver: rays that reach its
     // underside at a slant are turned back by the film of air the hairs hold under it.
     vec2 gxz = normalize(uGlowDir.xz);
@@ -931,6 +1124,20 @@ const litFragment = /* glsl */ `
   }
 `;
 
+// The yard seen from the eye (The First Morning's far layer): the same ray-traced yard the beads
+// refract, without the child (who is only ever seen through the drops).
+const yardFragment = /* glsl */ `
+  ${NOISE}
+  ${SKY}
+  ${CHILD}
+  varying vec3 vWorld, vN, vObj;
+  varying vec2 vUv;
+  void main() {
+    vec3 d = normalize(vWorld - cameraPosition);
+    gl_FragColor = vec4(yardColor(cameraPosition - uB, d, skyColor(d)), 1.0);
+  }
+`;
+
 // The backdrop of the mid layer: the far layer, already blurred, looked up through the main camera.
 const backdropFragment = /* glsl */ `
   uniform sampler2D tFar;
@@ -1031,11 +1238,21 @@ class Blur {
 // distortion and fringing over the whole frame once the eye is at the glass, and the near layer
 // (brass and fingers) laid over everything with its own depth of field.
 const compositeFragment = /* glsl */ `
-  uniform sampler2D tDiffuse, tBlur, tNear;
-  uniform float uBlurMix, uNear, uGlass, uBarrel, uFringe, uDiscR, uExpo;
+  uniform sampler2D tDiffuse, tBlur, tNear, tDof;
+  uniform float uBlurMix, uNear, uGlass, uBarrel, uFringe, uDiscR, uExpo, uDof, uShade, uDofDebug;
+  uniform vec3 uShadeCol;
   uniform vec2 uRes;
   varying vec2 vUv;
-  vec3 mid(vec2 uv) { return mix(texture2D(tDiffuse, uv).rgb, texture2D(tBlur, uv).rgb, uBlurMix); }
+  vec3 mid(vec2 uv) {
+    vec3 c = mix(texture2D(tDiffuse, uv).rgb, texture2D(tBlur, uv).rgb, uBlurMix);
+    // The depth of field (The First Morning): in focus, the full-resolution image; out of it, the
+    // gathered blur.
+    if (uDof > 0.0) {
+      vec4 g = texture2D(tDof, uv);
+      c = mix(c, g.rgb, smoothstep(0.6, 1.6, g.a));
+    }
+    return c;
+  }
   void main() {
     vec2 uv = vUv;
     vec3 col;
@@ -1052,17 +1269,215 @@ const compositeFragment = /* glsl */ `
       col.b = mid(0.5 + (u0 - 0.5) * (1.0 - fr)).b;
       col = mix(mid(uv), col, uGlass);
     } else col = mid(uv);
+    // The child leaning in over the leaf, too close to be anything but shadow: the top of the frame
+    // darkens softly toward deep lilac.
+    if (uShade > 0.0) {
+      float s = smoothstep(0.35, 1.08, uv.y + 0.06 * sin(uv.x * 3.1 + 0.4)) * uShade;
+      col *= mix(vec3(1.0), uShadeCol, s);
+    }
     vec4 n = texture2D(tNear, uv) * uNear;
     col = col * (1.0 - n.a) + n.rgb;
+    if (uDofDebug > 0.0) col = vec3(texture2D(tDof, uv).a / uDofDebug);
     gl_FragColor = vec4(col * uExpo, 1.0);
   }
 `;
+
+// ---------------------------------------------------------------------------- depth of field
+// The First Morning's low views across the leaf are macro photographs: the bead sharp, the blade
+// before it a soft green wash, the far margin and the yard melting away. A gather depth of field from
+// the mid layer's own depth, at half resolution. Circles of confusion are radii in half-resolution
+// pixels, signed (+ in front of the focus, - behind it). Each pixel gathers 48 samples on a golden-
+// angle spiral over its circle: a sample counts where its own circle reaches the pixel, and one that
+// lies behind the pixel cannot spread over it further than the pixel's own circle, so a sharp bead
+// never bleeds into the blurred leaf behind it. The near field's circles are first spread outward (a
+// max filter at quarter resolution), so the blurred blade in front reaches over what lies behind it.
+// Where the circle is under a pixel or two the full-resolution image is kept as it is.
+const dofPrepFragment = /* glsl */ `
+  uniform sampler2D tColor, tDepth;
+  uniform vec2 uTexel; // full resolution
+  uniform float uNear, uFar, uFocus, uAS, uSlab, uMaxR, uInf;
+  varying vec2 vUv;
+  float coc(float d) {
+    if (d >= 0.99999) return uInf; // the far layer, behind everything
+    float z = uNear * uFar / (uFar - d * (uFar - uNear));
+    float x = 1.0 / z - 1.0 / uFocus;
+    return clamp(sign(x) * max(abs(x) - uSlab, 0.0) * uAS, -uMaxR, uMaxR);
+  }
+  void main() {
+    vec2 o = uTexel * 0.5;
+    vec2 a = vUv + vec2(-o.x, -o.y), b = vUv + vec2(o.x, -o.y), c = vUv + vec2(-o.x, o.y), e = vUv + vec2(o.x, o.y);
+    vec3 col = texture2D(tColor, a).rgb + texture2D(tColor, b).rgb + texture2D(tColor, c).rgb + texture2D(tColor, e).rgb;
+    // The nearest of the four decides the circle: the near field spreads, never the reverse.
+    float d = min(min(texture2D(tDepth, a).x, texture2D(tDepth, b).x), min(texture2D(tDepth, c).x, texture2D(tDepth, e).x));
+    gl_FragColor = vec4(col * 0.25, coc(d));
+  }
+`;
+const dofMaxFragment = /* glsl */ `
+  uniform sampler2D tSrc;
+  uniform vec2 uStep, uTexel;
+  uniform float uK, uFirst;
+  varying vec2 vUv;
+  float near(vec2 uv) {
+    // The first pass reads the half-resolution circles (both half texels of a quarter one); the
+    // second reads the first pass.
+    if (uFirst > 0.5) return max(max(texture2D(tSrc, uv - uTexel * 0.5).a, texture2D(tSrc, uv + uTexel * 0.5).a), 0.0);
+    return texture2D(tSrc, uv).r;
+  }
+  void main() {
+    // A neighbour's circle counts only if it reaches this far (a step is two half-res pixels).
+    float m = near(vUv);
+    for (int i = 1; i <= 40; i++) {
+      if (float(i) > uK) break;
+      float v = max(near(vUv + uStep * float(i)), near(vUv - uStep * float(i)));
+      if (v >= 2.0 * float(i)) m = max(m, v);
+    }
+    gl_FragColor = vec4(m, 0.0, 0.0, 1.0);
+  }
+`;
+const dofGatherFragment = /* glsl */ `
+  uniform sampler2D tPrep, tPrep4, tPrep8, tNearMax;
+  uniform vec2 uTexel; // half resolution
+  uniform float uMaxR;
+  varying vec2 vUv;
+  // Wide circles read a smaller copy (quarter, eighth resolution), so 48 samples spread far apart
+  // still see a small bright thing as a disc, not as a scatter of dots.
+  vec4 at(vec2 uv, float R) {
+    if (R < 7.0) return texture2D(tPrep, uv);
+    if (R < 16.0) return texture2D(tPrep4, uv);
+    return texture2D(tPrep8, uv);
+  }
+  void main() {
+    vec4 c0 = texture2D(tPrep, vUv);
+    float cc = abs(c0.a);
+    float R = min(max(cc, texture2D(tNearMax, vUv).r), uMaxR);
+    vec3 acc = c0.rgb;
+    float tot = 1.0;
+    if (R > 0.6) {
+      for (int i = 0; i < 48; i++) {
+        float fi = float(i) + 0.5;
+        float r = R * sqrt(fi / 48.0);
+        float a = fi * 2.39996323;
+        vec4 s = at(vUv + vec2(cos(a), sin(a)) * r * uTexel, R);
+        float sc = abs(s.a);
+        if (s.a < c0.a) sc = min(sc, cc * 2.0);
+        float m = smoothstep(r - 0.75, r + 0.75, sc);
+        acc += mix(acc / tot, s.rgb, m);
+        tot += 1.0;
+      }
+    }
+    gl_FragColor = vec4(acc / tot, R);
+  }
+`;
+
+class DepthOfField {
+  constructor() {
+    const q = (frag, uniforms) => new THREE.ShaderMaterial({ uniforms, vertexShader: blurVertex, fragmentShader: frag, depthTest: false, depthWrite: false });
+    this.prep = q(dofPrepFragment, {
+      tColor: { value: null },
+      tDepth: { value: null },
+      uTexel: { value: new THREE.Vector2() },
+      uNear: { value: 1 },
+      uFar: { value: 3000 },
+      uFocus: { value: 50 },
+      uAS: { value: 0 },
+      uSlab: { value: 0 },
+      uMaxR: { value: 16 },
+      uInf: { value: 0 },
+    });
+    this.max = q(dofMaxFragment, { tSrc: { value: null }, uStep: { value: new THREE.Vector2() }, uTexel: { value: new THREE.Vector2() }, uK: { value: 1 }, uFirst: { value: 1 } });
+    this.gather = q(dofGatherFragment, { tPrep: { value: null }, tPrep4: { value: null }, tPrep8: { value: null }, tNearMax: { value: null }, uTexel: { value: new THREE.Vector2() }, uMaxR: { value: 16 } });
+    this.down = q(downFragment, { tSrc: { value: null }, uTexel: { value: new THREE.Vector2() } });
+    this.quad = new FullScreenQuad(this.prep);
+    this.targets = {};
+  }
+
+  target(name, w, h) {
+    let t = this.targets[name];
+    if (!t) t = this.targets[name] = new THREE.WebGLRenderTarget(w, h, { type: THREE.HalfFloatType, depthBuffer: false });
+    if (t.width !== w || t.height !== h) t.setSize(w, h);
+    return t;
+  }
+
+  pass(renderer, mat, target) {
+    this.quad.material = mat;
+    renderer.setRenderTarget(target);
+    this.quad.render(renderer);
+  }
+
+  // color, depth: the scene pass's output (w x h). dof: { A (mm), focus (mm), slab (1/mm), maxR1080 }.
+  // Returns the gathered texture (half resolution: rgb, a = the circle used, half-res px).
+  run(renderer, color, depth, w, h, camera, dof) {
+    const hw = Math.max(1, Math.ceil(w / 2)), hh = Math.max(1, Math.ceil(h / 2));
+    const qw = Math.max(1, Math.ceil(w / 4)), qh = Math.max(1, Math.ceil(h / 4));
+    const pxPerTan = h / (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)));
+    const AS = (dof.A * pxPerTan) / 4; // radius, in half-resolution pixels, per unit of |1/z - 1/zf|
+    const maxR = Math.max(1, (dof.maxR1080 ?? 48) * (h / 1080) / 2);
+    const p = this.prep.uniforms;
+    p.tColor.value = color;
+    p.tDepth.value = depth;
+    p.uTexel.value.set(1 / w, 1 / h);
+    p.uNear.value = camera.near;
+    p.uFar.value = camera.far;
+    p.uFocus.value = dof.focus;
+    p.uAS.value = AS;
+    p.uSlab.value = dof.slab ?? 0;
+    p.uMaxR.value = maxR;
+    p.uInf.value = -Math.min(Math.max(1 / dof.focus - (dof.slab ?? 0), 0) * AS, maxR);
+    const prep = this.target('prep', hw, hh);
+    this.pass(renderer, this.prep, prep);
+    const m = this.max.uniforms;
+    const K = Math.ceil(maxR / 2);
+    m.uK.value = K;
+    m.tSrc.value = prep.texture;
+    m.uFirst.value = 1;
+    m.uStep.value.set(1 / qw, 0);
+    m.uTexel.value.set(0, 1 / hh);
+    const mh = this.target('maxH', qw, qh);
+    this.pass(renderer, this.max, mh);
+    m.tSrc.value = mh.texture;
+    m.uFirst.value = 0;
+    m.uStep.value.set(0, 1 / qh);
+    const mv = this.target('maxV', qw, qh);
+    this.pass(renderer, this.max, mv);
+    // Smaller copies of the prepared image (colour and circle averaged) for the wide circles.
+    const d = this.down.uniforms;
+    d.tSrc.value = prep.texture;
+    d.uTexel.value.set(1 / hw, 1 / hh);
+    const p4 = this.target('p4', qw, qh);
+    this.pass(renderer, this.down, p4);
+    const ew = Math.max(1, Math.ceil(w / 8)), eh = Math.max(1, Math.ceil(h / 8));
+    d.tSrc.value = p4.texture;
+    d.uTexel.value.set(1 / qw, 1 / qh);
+    const p8 = this.target('p8', ew, eh);
+    this.pass(renderer, this.down, p8);
+    const g = this.gather.uniforms;
+    g.tPrep.value = prep.texture;
+    g.tPrep4.value = p4.texture;
+    g.tPrep8.value = p8.texture;
+    g.tNearMax.value = mv.texture;
+    g.uTexel.value.set(1 / hw, 1 / hh);
+    g.uMaxR.value = maxR;
+    const out = this.target('gather', hw, hh);
+    this.pass(renderer, this.gather, out);
+    return out.texture;
+  }
+
+  dispose() {
+    for (const t of Object.values(this.targets)) t.dispose();
+    this.prep.dispose();
+    this.max.dispose();
+    this.gather.dispose();
+    this.down.dispose();
+    this.quad.dispose();
+  }
+}
 
 export class GardenPass extends Pass {
   constructor(garden) {
     super();
     this.garden = garden;
     this.blur = new Blur();
+    this.dof = new DepthOfField();
     this.material = new THREE.ShaderMaterial({
       uniforms: {
         tDiffuse: { value: null },
@@ -1076,6 +1491,11 @@ export class GardenPass extends Pass {
         uDiscR: { value: 500 },
         uExpo: { value: 1 },
         uRes: { value: new THREE.Vector2(1, 1) },
+        tDof: { value: null },
+        uDof: { value: 0 },
+        uShade: { value: 0 },
+        uDofDebug: { value: 0 },
+        uShadeCol: { value: new THREE.Color(0.3, 0.27, 0.42) },
       },
       vertexShader: /* glsl */ `varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
       fragmentShader: compositeFragment,
@@ -1100,6 +1520,14 @@ export class GardenPass extends Pass {
       u.tBlur.value = this.blur.run(renderer, readBuffer.texture, w, h, sigma);
       u.uBlurMix.value = sigma > 0.35 ? 1 : 0;
     }
+    // The First Morning's depth of field, from the scene pass's own depth.
+    const dof = g.dof;
+    if (dof.A > 0 && readBuffer.depthTexture && !g.useMidLow) {
+      u.tDof.value = this.dof.run(renderer, readBuffer.texture, readBuffer.depthTexture, w, h, g.camera, dof);
+      u.uDof.value = 1;
+      u.uDofDebug.value = dof.debug ?? 0;
+    } else u.uDof.value = 0;
+    u.uShade.value = g.shadeTop;
     u.tNear.value = g.nearTexture;
     u.uNear.value = g.nearTexture && g.loupeOn ? 1 : 0;
     u.uGlass.value = g.glass.on;
@@ -1114,6 +1542,7 @@ export class GardenPass extends Pass {
 
   dispose() {
     this.blur.dispose();
+    this.dof.dispose();
     this.material.dispose();
     this.quad.dispose();
   }
@@ -1242,6 +1671,16 @@ export class Garden {
     this.mirror = 0; // the tear bead's skin as a curved mirror of sky (the dive)
     this.nearTexture = null;
     this.optics = { M: 1, blurPx: 0, flip: false, dFlip: 36, d: LOUPE.rest, discR: 0, discC: new THREE.Vector2() };
+    // The First Morning (all off in the hub): the depth of field of the low views (A: aperture, mm;
+    // focus, mm; slab: a depth round the focus kept sharp, in 1/mm; maxR1080: the largest circle,
+    // px at 1080p), the darkness above as the child leans in, the far layer's own blur (px at 1080p)
+    // and brightness, and the leaf margin's own defocus aperture.
+    this.dof = { A: 0, focus: 50, slab: 0, maxR1080: 48 };
+    this.shadeTop = 0;
+    this.farSigma1080 = null;
+    this.farGain = 0.37;
+    this.leafPupil = null;
+    this.morning = false;
 
     this.u = this.sharedUniforms();
     this.buildLeaf();
@@ -1273,6 +1712,9 @@ export class Garden {
       uLightGlow: { value: new THREE.Color(0.58, 0.45, 0.3) },
       uSkyOcc: { value: 0 },
       uExpo: { value: 1 },
+      // How much the leaf's silver sheen and the hairs' velvet build up at grazing angles (1 in the hub;
+      // lower in The First Morning's low views across the leaf, where it would wash the blade white).
+      uGraze: { value: 1 },
       uHaze: { value: c(DAWN.haze) },
       uHazeK: { value: 0.00022 },
       uTime: { value: 0 },
@@ -1287,6 +1729,22 @@ export class Garden {
       uChildCol: { value: c(DAWN.child) },
       uChild: { value: 1 },
       uB: { value: B.clone() },
+      // The First Morning: the yard (0 in the hub, where the beads see only sky and the child over
+      // them) and the child sitting on the step.
+      uYard: { value: 0 },
+      uSit: { value: 0 },
+      uSitA: { value: Array.from({ length: 8 }, () => new THREE.Vector4()) },
+      uSitB: { value: Array.from({ length: 8 }, () => new THREE.Vector4()) },
+      uSitHead: { value: new THREE.Vector4(0, 0, -900, 0) },
+      uSitGlint: { value: new THREE.Vector4(0, 0, -900, 0) },
+      uWall: { value: c(0x857c98) },
+      uWallLit: { value: c(0xb49ea8) },
+      uWin: { value: c(0xffd9a8, 2.4) },
+      uStone: { value: c(0xb2aab4) },
+      uGravel: { value: c(0x6a6070) },
+      uTerrace: { value: c(0x8e9a98) },
+      uRoof: { value: c(0x5e5870) },
+      uYardHaze: { value: c(DAWN.haze) },
     };
   }
 
@@ -1408,8 +1866,84 @@ export class Garden {
       side: THREE.BackSide,
       alphaToCoverage: true,
     });
-    this.beadMesh = this.beadInstances(beads, this.beadMat);
+    // Two spare instances after the leaf's own beads, hidden until The First Morning needs them: the
+    // falling tear and the satellite drop that hops off the merged bead. (`beads` stays the leaf's.)
+    this.fallIndex = beads.length;
+    const spare = [
+      { c: new THREE.Vector3(0, -1000, 0), r: 1.25, kind: 2, leafY: 0 },
+      { c: new THREE.Vector3(0, -1000, 0), r: 0.15, kind: 2, leafY: 0 },
+    ];
+    this.beadMesh = this.beadInstances([...beads, ...spare], this.beadMat);
+    this.setBeadInstance(this.fallIndex, null);
+    this.setBeadInstance(this.fallIndex + 1, null);
     this.scene.add(this.beadMesh);
+
+    // The merge: the tear and the bead as one sphere-traced surface (the neck), then the merged bead
+    // ringing. Shown only while it happens; the tear bead's own instance is hidden meanwhile.
+    const mergeMat = this.beadMat.clone();
+    mergeMat.defines = { MERGE: 1 };
+    mergeMat.uniforms = {
+      ...this.beadMat.uniforms,
+      uMA: { value: new THREE.Vector4(0, 3.4, 0, 2.0) },
+      uMB: { value: new THREE.Vector4(0, 7, 0, 1.25) },
+      uMK: { value: 0 },
+      uRC: { value: new THREE.Vector4(B.x, B.y, B.z, BEAD_R) },
+      uRing: { value: new THREE.Vector4() },
+    };
+    this.mergeMat = mergeMat;
+    this.mergeMesh = this.beadInstances([{ c: B.clone(), r: 4, kind: 0, leafY: leafHeight(0, 0) }], mergeMat);
+    this.mergeMesh.visible = false;
+    this.mergeMesh.renderOrder = 11;
+    this.scene.add(this.mergeMesh);
+  }
+
+  // Moves instance i of the bead mesh (c: centre, r: radius); null hides it.
+  setBeadInstance(i, c, r = 1) {
+    const m = _m4b;
+    if (c) m.makeScale(r, r, r).setPosition(c);
+    else m.makeScale(0, 0, 0).setPosition(0, -1000, 0);
+    this.beadMesh.setMatrixAt(i, m);
+    this.beadMesh.instanceMatrix.needsUpdate = true;
+  }
+
+  // The tear bead (before the tear it is smaller and sits lower: 2.0 mm at 3.4); null hides it.
+  setTearBead(c, r) {
+    this.setBeadInstance(0, c, r);
+    if (c) {
+      this.beads[0].c.copy(c);
+      this.beads[0].r = r;
+      this.beadUniform[0].set(c.x, c.y, c.z, r);
+    }
+  }
+
+  // The falling tear and the satellite drop (null hides them).
+  setFall(c, r = 1.25) {
+    this.setBeadInstance(this.fallIndex, c, r);
+  }
+
+  setSatellite(c, r = 0.15) {
+    this.setBeadInstance(this.fallIndex + 1, c, r);
+  }
+
+  // The merge (null hides it). bead, tear: Vector4 (centre, radius); k: the neck's smooth-min width;
+  // merged: Vector4 (centre, radius); ring: Vector3 (l = 2 amplitude, l = 3 amplitude, blend to it).
+  setMerge(m) {
+    this.mergeMesh.visible = !!m;
+    if (!m) return;
+    const u = this.mergeMat.uniforms;
+    u.uMA.value.copy(m.bead);
+    u.uMB.value.copy(m.tear);
+    u.uMK.value = m.k;
+    u.uRC.value.copy(m.merged);
+    u.uRing.value.set(m.ring.x, m.ring.y, m.ring.z, 0);
+    // The proxy bounds both drops and the ringing bead's widest swing.
+    const a = _v3a.set(m.bead.x, m.bead.y, m.bead.z), b = _v3b.set(m.tear.x, m.tear.y, m.tear.z);
+    const c = _v3c.copy(a).add(b).multiplyScalar(0.5);
+    let r = Math.max(a.distanceTo(c) + m.bead.w, b.distanceTo(c) + m.tear.w);
+    r = Math.max(r, m.merged.w * (1 + Math.abs(m.ring.x) + Math.abs(m.ring.y)) + c.distanceTo(_v3a.set(m.merged.x, m.merged.y, m.merged.z)));
+    _m4b.makeScale(r * 1.06 + 0.1, r * 1.06 + 0.1, r * 1.06 + 0.1).setPosition(c);
+    this.mergeMesh.setMatrixAt(0, _m4b);
+    this.mergeMesh.instanceMatrix.needsUpdate = true;
   }
 
   beadInstances(list, mat) {
@@ -1516,6 +2050,29 @@ export class Garden {
     rim.rotation.x = -Math.PI / 2;
     rim.position.set(18, -52, 8);
     far.add(rim);
+    this.soil = soil;
+
+    // The First Morning's side views: the yard behind the plant, ray-traced on a sphere round the eye
+    // (the same yard the beads refract), the pot's body below its rim and the soil inside it. Shown
+    // only by setMorning(true); the hub keeps its soil plane.
+    const yard = new THREE.Group();
+    yard.visible = false;
+    this.yard = yard;
+    far.add(yard);
+    this.yardSky = new THREE.Mesh(
+      new THREE.SphereGeometry(2400, 48, 24),
+      new THREE.ShaderMaterial({ uniforms: this.u, vertexShader: meshVertex, fragmentShader: yardFragment, side: THREE.BackSide, depthWrite: false }),
+    );
+    this.yardSky.renderOrder = -10;
+    this.yardSky.frustumCulled = false;
+    yard.add(this.yardSky);
+    const pot = new THREE.Mesh(new THREE.CylinderGeometry(129, 104, 190, 96, 1, true), lit(0xc79a84, 0xa87866, 0.05));
+    pot.position.set(18, -52 - 95, 8);
+    yard.add(pot);
+    const potSoil = new THREE.Mesh(new THREE.CircleGeometry(127, 64), lit(0x3a3348, 0x4a4058, 0.08));
+    potSoil.rotation.x = -Math.PI / 2;
+    potSoil.position.set(18, -78, 8);
+    yard.add(potSoil);
 
     // The backdrop: a plane far below in the mid layer that shows the blurred far layer.
     this.farTarget = null;
@@ -1530,6 +2087,26 @@ export class Garden {
     this.backdrop.position.y = -90;
     this.backdrop.renderOrder = -10;
     this.scene.add(this.backdrop);
+    // The same backdrop on a sphere round the eye, for views that look up across the leaf (The First
+    // Morning). It shows the same blurred far layer at the same place on screen, so where both cover
+    // a pixel nothing changes.
+    const skyMat = this.backdropMat.clone();
+    skyMat.uniforms = this.backdropMat.uniforms;
+    skyMat.side = THREE.BackSide;
+    this.backdropSky = new THREE.Mesh(new THREE.SphereGeometry(2500, 32, 16), skyMat);
+    this.backdropSky.renderOrder = -11;
+    this.backdropSky.frustumCulled = false;
+    this.scene.add(this.backdropSky);
+  }
+
+  // The First Morning's side views: the yard and the pot's body in the far layer, the yard in what
+  // the beads and the brass see. Off, the Garden is the hub exactly.
+  setMorning(on) {
+    this.morning = on;
+    this.yard.visible = on;
+    this.soil.visible = !on;
+    this.u.uYard.value = on ? 1 : 0;
+    if (!on) this.u.uSit.value = 0;
   }
 
   // G.'s loupe: a worn brass bezel round a 15 mm glass, a little ring to hang it by, and the child's
@@ -1813,7 +2390,7 @@ export class Garden {
     u.uTime.value = this.time;
     u.uSkyOcc.value = this.skyOcc;
     u.uExpo.value = this.expo;
-    this.farExpo.value = this.expo * 0.37;
+    this.farExpo.value = this.expo * this.farGain;
     const cam = this.camera;
     const focus = Math.max(this.focus, 0.05);
     cam.near = clamp(0.05 * focus, 0.02, 2);
@@ -1827,7 +2404,7 @@ export class Garden {
     this.beadMat.uniforms.uMirror.value = this.mirror;
     // The leaf's analytic defocus (mm at the leaf per unit of |1 - z/focus|).
     this.leafMat.uniforms.uFocus.value = focus;
-    this.leafMat.uniforms.uPupil.value = this.pupil;
+    this.leafMat.uniforms.uPupil.value = this.leafPupil ?? this.pupil;
     if (this.loupeOn) this.placeLoupe();
     this.loupe.visible = this.loupeOn;
     this.disc.visible = this.loupeOn;
@@ -1853,11 +2430,13 @@ export class Garden {
     renderer.autoClear = true;
     // Far layer.
     const farZ = cam.position.y - (-35);
+    this.backdropSky.position.copy(cam.position);
+    if (this.morning) this.yardSky.position.copy(cam.position);
     renderer.setRenderTarget(this.farTarget);
     renderer.render(this.farScene, cam);
     // The backdrop is blurred as by a wider aperture than the eye's, the way a macro lens isolates
     // its subject: the leaf in front stays the clear one.
-    const farSigma = (this.coc(farZ) * 2.2 / 2.4 + 1.2 * (h / 1080)) / 2;
+    const farSigma = this.farSigma1080 != null ? (this.farSigma1080 * (h / 1080)) / 2 : (this.coc(farZ) * 2.2 / 2.4 + 1.2 * (h / 1080)) / 2;
     this.backdropMat.uniforms.tFar.value = this.blurFar.run(renderer, this.farTarget.texture, this.farTarget.width, this.farTarget.height, farSigma);
     this.backdropMat.uniforms.uMainVP.value.multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse);
 
@@ -1974,3 +2553,7 @@ const _p = new THREE.Vector3();
 const _m4 = new THREE.Matrix4();
 const _s2 = new THREE.Vector2();
 const _col = new THREE.Color();
+const _m4b = new THREE.Matrix4();
+const _v3a = new THREE.Vector3();
+const _v3b = new THREE.Vector3();
+const _v3c = new THREE.Vector3();

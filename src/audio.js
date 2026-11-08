@@ -37,6 +37,7 @@ export class IntroAudio {
     this.decades = 0;
     this.tideOn = false;
     this.rodVoices = [];
+    this.birdRate = 1; // how often birds sing (The First Morning thickens them)
   }
 
   get on() {
@@ -484,6 +485,67 @@ export class IntroAudio {
     o.stop(at + 1.9);
   }
 
+  // ---------------------------------------------------------------- The First Morning's voices
+  // A breeze through the garden: a slow swell of soft noise in the bed.
+  gust(level = 0.06, seconds = 3) {
+    if (!this.on) return;
+    const c = this.ctx;
+    const at = this.now;
+    const n = this.noiseBurst(at, seconds + 0.2);
+    const lp = c.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.setValueAtTime(500, at);
+    lp.frequency.linearRampToValueAtTime(1100, at + seconds * 0.45);
+    lp.frequency.linearRampToValueAtTime(600, at + seconds);
+    const g = c.createGain();
+    this.env(g.gain, at, [[0, 0], [seconds * 0.45, level], [seconds, 0]]);
+    n.connect(lp).connect(g).connect(this.bed);
+  }
+
+  // The beads trembling on their hairs: a few tiny glassy ticks.
+  beadTick() {
+    if (!this.on) return;
+    const c = this.ctx;
+    [0, 0.055, 0.13, 0.21].forEach((dt, i) => {
+      const at = this.now + dt;
+      const f = [4186, 5274, 3951, 4699][i];
+      const o = c.createOscillator();
+      o.frequency.value = f;
+      const g = c.createGain();
+      this.env(g.gain, at, [[0, 0], [0.003, 0.016 * (1 - i * 0.18)], [0.09, 0]]);
+      o.connect(g).connect(this.master);
+      g.connect(this.verb);
+      o.start(at);
+      o.stop(at + 0.12);
+    });
+  }
+
+  // The shoulders shake once: two caught breaths in, a long unsteady one out. Breath only.
+  sob() {
+    if (!this.on) return;
+    this.breath('in', 0, { dur: 0.42, level: 0.13, shaky: 1 });
+    this.breath('in', 0.46, { dur: 0.36, level: 0.11, shaky: 1 });
+    this.breath('out', 0.95, { dur: 1.5, level: 0.08 });
+    this.nextBreath = Math.max(this.nextBreath, this.now + 3.2);
+  }
+
+  setBirdRate(r) {
+    this.birdRate = r;
+    if (this.on && this.nextBird) this.nextBird = Math.min(this.nextBird, this.now + 1.2);
+  }
+
+  // A high-speed camera's slow motion (k: 0 normal .. 1 slowest): the garden holds still, dark and
+  // low; the birds that still sing are slowed.
+  setSlow(k, seconds = 1) {
+    if (!this.on || this.settled) return;
+    const t = this.now;
+    this.bedFilter.frequency.cancelScheduledValues(t);
+    this.bedFilter.frequency.setTargetAtTime(18000 * Math.pow(420 / 18000, k), t, seconds / 3);
+    this.bed.gain.cancelScheduledValues(t);
+    this.bed.gain.setTargetAtTime(1 - 0.7 * k, t, seconds / 3);
+    this.stretch = 1 + 3 * k;
+  }
+
   // ------------------------------------------------------------------------- continuous parts
   gardenIn(seconds = 3) {
     if (!this.on) return;
@@ -688,7 +750,7 @@ export class IntroAudio {
     if (this.nextBird && t >= this.nextBird) {
       const blackbird = Math.random() < 0.45;
       this.bird(0, { kind: blackbird ? 'blackbird' : 'small', level: blackbird ? 0.035 : 0.02, pan: Math.random() * 1.6 - 0.8 });
-      this.nextBird = t + (2.5 + Math.random() * 4.5) * Math.min(this.stretch, 3);
+      this.nextBird = t + ((2.5 + Math.random() * 4.5) * Math.min(this.stretch, 3)) / this.birdRate;
     }
   }
 
