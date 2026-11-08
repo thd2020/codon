@@ -384,7 +384,7 @@ const fragmentShader = /* glsl */ `
     lip = 0.0;
     if (p.y <= 0.0) return 0.0;
     float L = gH + 0.62 * gR;
-    float hw = 0.36 * gR * gX.w * sqrt(max(1.0 - (p.z * p.z) / (L * L), 0.0));
+    float hw = 0.5 * gR * gX.w * sqrt(max(1.0 - (p.z * p.z) / (L * L), 0.0));
     float d = abs(p.x) - hw;
     lip = exp(-pow(max(d, 0.0) / max(0.05, 1.5 * gFp), 2.0)) * smoothstep(0.0, 0.06, hw);
     return clamp(-d / max(gFp, 1e-4) + 0.5, 0.0, 1.0);

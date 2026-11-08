@@ -88,7 +88,7 @@ const domeFragment = /* glsl */ `
     float thread = (1.0 - smoothstep(w - aa * 0.5, w + aa * 0.5, e)) * (0.45 + 0.8 * k);
     // Seen from further off (uScale > 1) the threads give way to their glow, which widens into a
     // soft mottled veil: the net never turns into a web of hairlines.
-    float glow = exp(-e / (0.07 * (1.0 + 1.6 * smoothstep(1.1, 2.6, uScale)))) * (0.5 + 0.5 * k);
+    float glow = exp(-e / (0.07 * (1.0 + 3.0 * smoothstep(1.05, 2.0, uScale)))) * (0.5 + 0.5 * k);
     float far = smoothstep(0.05, 0.12, length(fwidth(p)));
     return mix(vec2(thread, glow), vec2(0.1, 0.2), far);
   }

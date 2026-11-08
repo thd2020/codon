@@ -47,7 +47,7 @@ const GLOW_DIR = new THREE.Vector3(0.35, 0.12, 0.45).normalize();
 // The leaf.
 // bend: how far (radians at the margin) the lobes and their veins curve as they run out; it is zero at
 // the sinus, so the basal cut stays straight.
-const LEAF = { R0: 40, lobes: 9, sinus: -Math.PI / 2 - 0.42, tooth: 1.25, teeth: 9, cup: 8.0, pleat: 4.0, bend: 0.09, phase: 0 };
+const LEAF = { R0: 40, lobes: 9, sinus: -Math.PI / 2 - 0.42, tooth: 1.25, teeth: 9, cup: 8.0, pleat: 3.4, bend: 0.09, phase: 0 };
 const NB = 32; // beads the leaf shader knows about
 
 const TAU = Math.PI * 2;
@@ -265,7 +265,9 @@ const BLADE = /* glsl */ `
     vec2 q = p + 0.5 * vec2(vn2(p * 0.42), vn2(p * 0.42 + 9.1)) - 0.25;
     vec4 a = vorC(q / 1.1);
     float dome = smoothstep(0.012, 0.05, 1.1 / (pw * 60.0));
-    bump = a.zw * 0.38 * dome * smoothstep(0.0, 0.22, a.y) + groove * smoothstep(0.15, 0.6, sg1 / pw);
+    // (gentler once each areole is large on screen: close up the blade is soft, not cobbled)
+    dome *= 1.0 - 0.5 * smoothstep(40.0, 160.0, 1.1 / pw);
+    bump = a.zw * 0.28 * dome * smoothstep(0.0, 0.22, a.y) + groove * smoothstep(0.15, 0.6, sg1 / pw);
     // The areoles' crowns catch a little more light than their edges: shading, not outline.
     col *= 1.0 + 0.05 * dome * (smoothstep(0.0, 0.3, a.y) - 0.5);
     // Close up: the epidermal cells as soft cushions, and the feet of the silver hairs as small
@@ -306,8 +308,12 @@ export function leafHeight(x, z, L = LEAF) {
   // Each panel between two veins is a shallow arch (a parabola across it): rounded ridges, the
   // veins in soft creases, smooth shading from one side of a panel to the other.
   const v = 2 * (u + 0.5 - Math.floor(u + 0.5)) - 1;
-  const pleat = 1 - v * v;
-  return L.cup * Math.pow(rn, 1.6) + L.pleat * rn * pleat * smooth(0.0, 0.35, rn) + 1.3 * rn * rn * Math.sin(2 * phi + 0.9) + 0.5 * rn * rn * rn * Math.sin(5 * phi + 2.1);
+  // The pleats are deeper on some lobes than others and ease off toward the margin, so the blade
+  // reads as a leaf, not a pleated fan.
+  const psi = psiOf(phi, rn, L);
+  const amp = 0.72 + 0.3 * Math.sin(2 * psi + 0.7 + L.phase) + 0.14 * Math.sin(5 * psi + 2 + L.phase);
+  const pleat = (1 - v * v) * amp * (1 - 0.35 * rn);
+  return L.cup * Math.pow(rn, 1.6) + L.pleat * rn * pleat * smooth(0.0, 0.35, rn) + 1.3 * rn * rn * Math.sin(2 * phi + 0.9) + 0.6 * rn * rn * rn * Math.sin(5 * phi + 2.1 + L.phase) + 0.35 * rn * rn * Math.sin(7 * phi + 0.4);
 }
 
 function marginR(phi, L = LEAF) {
@@ -604,12 +610,12 @@ const beadFragment = /* glsl */ `
         float th = max(bard * sh - rdoa, 0.0);
         float dd = length(oa + T2 * th - ba * sh);
         float rr = 0.009 * (1.0 - 0.55 * sh);
-        // A glass fibre: brighter at its edges than through its middle.
-        float core = 1.0 - smoothstep(rr - lp * 0.5, rr + lp * 0.5, dd);
-        float edge = smoothstep(rr * 0.2, rr * 0.9, dd);
-        hm = max(hm, core * (0.45 + 0.55 * edge) * smoothstep(0.2, 0.7, rr / lp) * (0.4 + 0.6 * sh));
+        // A glass fibre seen through water: a soft, pale, translucent rod (no hard edges).
+        float soft = rr * 0.8 + lp;
+        float core = 1.0 - smoothstep(rr - soft, rr + soft, dd);
+        hm = max(hm, core * smoothstep(0.2, 0.7, rr / lp) * (0.4 + 0.6 * sh));
       }
-      c = mix(c, skyColor(vec3(0.0, 1.0, 0.0)) * 1.1 + uSun * 0.15, hm * 0.45 * m);
+      c = mix(c, skyColor(vec3(0.0, 1.0, 0.0)) * 1.05 + uSun * 0.1, hm * 0.22 * m);
     }
     return c;
   }
@@ -641,7 +647,7 @@ const beadFragment = /* glsl */ `
       const float e = 0.09;
       float s0 = salt(qm, uTime);
       vec3 g = (vec3(salt(qm + vec3(e, 0, 0), uTime), salt(qm + vec3(0, e, 0), uTime), salt(qm + vec3(0, 0, e), uTime)) - s0) / e;
-      T1 = normalize(T1 + uSchlieren * g * 0.075);
+      T1 = normalize(T1 + uSchlieren * g * 0.05);
       lum = uSchlieren * 0.04 * (smoothstep(0.2, 1.6, length(g)) - 0.5);
     }
     float L = -2.0 * dot(T1, N1) * vR;
@@ -686,7 +692,7 @@ const beadFragment = /* glsl */ `
     // underside at a slant are turned back by the film of air the hairs hold under it.
     vec2 gxz = normalize(uGlowDir.xz);
     float away = dot(normalize(N1.xz + 1e-5), -gxz) * 0.5 + 0.5;
-    float qs = smoothstep(0.84, 0.94, rr) * (1.0 - smoothstep(0.975, 1.0, rr)) * (vBead.y < 1.5 ? 1.0 : 0.6) * (0.55 + 0.45 * away);
+    float qs = smoothstep(0.86, 0.95, rr) * (1.0 - smoothstep(0.975, 1.0, rr)) * (vBead.y < 1.5 ? 1.0 : 0.6) * pow(away, 1.6);
     vec3 silver = skyColor(normalize(vec3(-N1.x * 0.6, 1.0, -N1.z * 0.6))) * 1.3 + uSun * 0.15;
     thru = mix(thru, silver, qs * 0.7);
     // The glow, gathered by the bead as by a lens, lands inside it on the side away from the glow:
@@ -707,8 +713,8 @@ const beadFragment = /* glsl */ `
     refl += uSun * (pow(hs, 70.0) * 9.0 + pow(hs, 700.0) * 30.0);
     col = mix(thru, refl, F);
     col += uSun * (smoothstep(0.9965, 0.9985, hw) * 2.6 + pow(hw, 260.0) * 0.5) * uExpo;
-    // Rim light where the bead turns away: the bright sky bends round the edge.
-    col += skyColor(vec3(0.0, 1.0, 0.0)) * pow(1.0 - cosi, 3.0) * 0.32 * (1.0 + vBead.z);
+    // At a ting the rim brightens: the sky bends round the edge.
+    col += skyColor(vec3(0.0, 1.0, 0.0)) * pow(1.0 - cosi, 3.0) * (0.06 + 0.4 * vBead.z);
     float dist = length(P - cameraPosition);
     col = mix(col, uHaze, 1.0 - exp(-dist * uHazeK));
     vec4 clip = projectionMatrix * viewMatrix * vec4(P, 1.0);
@@ -824,10 +830,14 @@ const skinFragment = /* glsl */ `
       }
       // A smudge of violet ink, as from a fountain pen.
       vec3 dI = vL - uInk.xyz;
-      dI.z *= 0.45; // smeared along the finger
+      dI.z *= 0.35; // smeared along the finger
       float ragged = vn2(vL.xz * 1.1 + 3.0) * 0.6 + vn2(vL.xz * 3.3) * 0.4;
       float ink = (1.0 - smoothstep(uInk.w * 0.25, uInk.w, length(dI) + (ragged - 0.5) * uInk.w * 0.9)) * (0.45 + 0.55 * ragged);
-      alb = mix(alb, uInkCol, ink * 0.55);
+      alb = mix(alb, uInkCol, ink * 0.5);
+      // Warmer, redder skin at the knuckles and the fingertips.
+      float flush = 0.0;
+      for (int i = 0; i < 4; i++) flush = max(flush, exp(-dot(vL - uJoints[i].xyz, vL - uJoints[i].xyz) / 30.0));
+      alb *= mix(vec3(1.0), vec3(1.02, 0.9, 0.86), flush * 0.6);
     } else if (uKind > 1.5) {
       // Plaster: woven fabric, a row of tiny breathing holes, its gauze pad paler.
       float holes = smoothstep(0.32, 0.18, length(fract(vUv * vec2(22.0, 6.0)) - 0.5));
@@ -845,17 +855,21 @@ const skinFragment = /* glsl */ `
       float chord = 2.0 * uThick * max(-nl, 0.0) + 0.35;
       vec3 trans = exp(-chord / vec3(3.2, 1.15, 0.6));
       float far = smoothstep(0.05, -0.25, nl);
-      col += uGlowSkin * trans * far * (0.55 + 0.45 * (1.0 - nv)) * 1.6 * uExpo;
-      // The lit rim on the glow side.
-      col += uLightGlow * vec3(1.0, 0.9, 0.8) * pow(1.0 - nv, 3.0) * smoothstep(-0.1, 0.4, nl) * 0.7 * uExpo;
+      col += uGlowSkin * trans * far * (0.4 + 0.6 * pow(1.0 - nv, 1.5)) * 3.2 * uExpo;
+      // At the silhouette the finger is thin: the low light shines through its edges warm red,
+      // strongest on the side turned from the glow, and a paler lit rim on the side facing it.
+      float edgeT = pow(1.0 - nv, 2.2);
+      col += uGlowSkin * vec3(1.0, 0.4, 0.2) * edgeT * (0.3 + 0.7 * smoothstep(0.35, -0.3, nl)) * 1.25 * uExpo;
+      col += uLightGlow * vec3(1.0, 0.9, 0.8) * pow(1.0 - nv, 3.0) * smoothstep(-0.1, 0.4, nl) * 0.5 * uExpo;
     } else {
       col += uGlowSkin * pow(1.0 - nv, 3.0) * 0.05 * uExpo;
     }
     if (uKind > 0.5 && uKind < 1.5) {
       // Nail: a pale, short free edge (bitten), a pink cuticle at its base, and a soft sheen.
-      col = mix(col, skyLight(N) * vec3(0.92, 0.88, 0.86), smoothstep(0.55, 0.85, vObj.z) * 0.35);
-      col = mix(col, col * vec3(1.0, 0.82, 0.8), smoothstep(-0.55, -0.85, vObj.z) * 0.6);
-      col += min(skyColor(reflect(-V, N)), vec3(1.5)) * 0.08;
+      col = mix(col, skyLight(N) * vec3(0.95, 0.92, 0.9), smoothstep(0.6, 0.9, vObj.z) * 0.3);
+      col = mix(col, col * vec3(1.0, 0.86, 0.84), smoothstep(-0.6, -0.9, vObj.z) * 0.5);
+      float gl = pow(max(dot(reflect(-V, N), glowL()), 0.0), 30.0);
+      col += min(skyColor(reflect(-V, N)), vec3(1.5)) * 0.06 + uLightGlow * gl * 0.8;
     }
     gl_FragColor = vec4(col, 1.0);
   }
@@ -867,8 +881,8 @@ const glassFragment = /* glsl */ `
   ${NOISE}
   ${SKY}
   uniform sampler2D tPortal, tPortalBlur;
-  uniform float uBlurMix, uM, uSide, uDiscR, uBarrel, uFringe, uVignette;
-  uniform vec2 uC;
+  uniform float uBlurMix, uM, uDiscR, uBarrel, uFringe, uVignette;
+  uniform vec2 uC, uRectC, uRectS;
   varying vec3 vWorld, vN, vObj;
   varying vec2 vUv;
   vec3 look(vec2 st) {
@@ -878,13 +892,17 @@ const glassFragment = /* glsl */ `
     vec2 rel = gl_FragCoord.xy - uC;
     float r = length(rel) / uDiscR;
     vec2 relB = rel * (1.0 + uBarrel * r * r);
-    // The target already holds the magnified window, so only the sign of M matters here.
-    vec2 st = 0.5 + relB * sign(uM) / uSide;
+    // The target already holds the magnified window (the part of the disc that is on screen), so
+    // only the sign of M matters here.
+    float sg = sign(uM);
+    vec2 st = 0.5 + sg * (relB - uRectC) / uRectS;
     float fr = uFringe * smoothstep(0.45, 1.0, r);
+    vec2 stR = 0.5 + sg * (relB * (1.0 + fr) - uRectC) / uRectS;
+    vec2 stB = 0.5 + sg * (relB * (1.0 - fr) - uRectC) / uRectS;
     vec3 col;
-    col.r = look(0.5 + (st - 0.5) * (1.0 + fr)).r;
+    col.r = look(stR).r;
     col.g = look(st).g;
-    col.b = look(0.5 + (st - 0.5) * (1.0 - fr)).b;
+    col.b = look(stB).b;
     col *= 1.0 - uVignette * smoothstep(0.6, 1.0, r);
     vec3 N = normalize(vN);
     vec3 V = normalize(cameraPosition - vWorld);
@@ -1070,9 +1088,16 @@ export class GardenPass extends Pass {
     const u = this.material.uniforms;
     const w = readBuffer.width, h = readBuffer.height;
     const sigma = g.midSigma * (h / 1080);
-    u.tDiffuse.value = readBuffer.texture;
-    u.tBlur.value = this.blur.run(renderer, readBuffer.texture, w, h, sigma);
-    u.uBlurMix.value = sigma > 0.35 ? 1 : 0;
+    if (g.useMidLow && g.midLow) {
+      const t = g.midLow;
+      u.tDiffuse.value = t.texture;
+      u.tBlur.value = this.blur.run(renderer, t.texture, t.width, t.height, sigma * (t.height / h));
+      u.uBlurMix.value = 1;
+    } else {
+      u.tDiffuse.value = readBuffer.texture;
+      u.tBlur.value = this.blur.run(renderer, readBuffer.texture, w, h, sigma);
+      u.uBlurMix.value = sigma > 0.35 ? 1 : 0;
+    }
     u.tNear.value = g.nearTexture;
     u.uNear.value = g.nearTexture && g.loupeOn ? 1 : 0;
     u.uGlass.value = g.glass.on;
@@ -1193,6 +1218,7 @@ export class Garden {
     this.camera.position.set(0, B.y + EYE_H, 0);
     this.camera.lookAt(B);
     this.scene = new THREE.Scene();
+    this.emptyScene = new THREE.Scene(); // what the scene pass draws while the mid layer is drawn at half size
     this.farScene = new THREE.Scene();
     this.nearScene = new THREE.Scene();
     this.size = new THREE.Vector2(16, 9);
@@ -1517,7 +1543,7 @@ export class Garden {
       uRough: { value: rough },
       uGlint: { value: 0 },
       uGlintAng: { value: 0 },
-      uBrass: { value: sceneColor(0xe8cf98) },
+      uBrass: { value: sceneColor(0xe8d2a0) },
       uPatina: { value: sceneColor(0x56523c) },
       uGlintCol: { value: new THREE.Color(3.2, 2.6, 1.9) },
     });
@@ -1559,7 +1585,7 @@ export class Garden {
       uLoupeInv: this.loupeInv,
       uSkin: { value: sceneColor(color) },
       uGlowSkin: { value: sceneColor(ORGANELLE.jellyGlow, 0.9).lerp(new THREE.Color(1.0, 0.36, 0.2), 0.45) },
-      uInkCol: { value: sceneColor(0x4d3f9a) },
+      uInkCol: { value: sceneColor(0x4f5aa8) },
       uInk: { value: new THREE.Vector4(0, 0, 0, 0) },
       uJoints: { value: joints },
       uJointAx: { value: jointAx },
@@ -1567,10 +1593,10 @@ export class Garden {
       uThick: { value: thick },
     });
     const skinMat = (kind, color) => new THREE.ShaderMaterial({ uniforms: skinU(kind, color), vertexShader: skinVertex, fragmentShader: skinFragment });
-    const skin = skinMat(0, 0xe2c4b4);
-    const nail = skinMat(1, 0xe6cbc4);
-    const plaster = skinMat(2, 0xd4a879);
-    const gauze = skinMat(2, 0xf1e9dc);
+    const skin = skinMat(0, 0xe9c9b1);
+    const nail = skinMat(1, 0xf0d9cf);
+    const plaster = skinMat(2, 0xcfa577);
+    const gauze = skinMat(2, 0xe8dcc6);
     const fingers = new THREE.Group();
     group.add(fingers);
     const seg = (a, b, r0, r1, mat) => {
@@ -1604,31 +1630,29 @@ export class Garden {
       return out;
     };
     // Index: knuckle (out of frame), arching up over the middle joint, down onto the face.
-    const idx = [[-33, 6, -66], [-24.5, 12.5, -42], [-16.5, 10.5, -27], [-11.2, 6.4, -16.2]];
-    chain(idx, [6.6, 6.2, 5.7, 5.2], skin);
-    // Middle: lower, curling in under the rim beside the index.
-    const mdl = [[-50, -8, -58], [-38, -4.5, -37], [-29, -6, -23.5], [-22.5, -4.2, -13]];
-    chain(mdl, [6.9, 6.5, 6.0, 5.4], skin);
-    // The ring finger's knuckle, just in at the frame's corner: the hand goes on beyond.
-    chain([[-66, -14, -62], [-55, -11, -44]], [6.8, 6.3], skin);
+    const idx = [[-46, 3, -60], [-31, 13.5, -39], [-19.5, 11.5, -24.5], [-11.0, 7.0, -14.2]];
+    chain(idx, [6.4, 6.0, 5.5, 5.0], skin);
+    // Middle: lower, from further round, curling in under the rim below the index.
+    const mdl = [[-27, -11, -66], [-19, -6.5, -44], [-14, -8, -31], [-9.5, -6.5, -22.5]];
+    chain(mdl, [6.6, 6.2, 5.7, 5.1], skin);
     // Joints for the creases: index PIP and DIP, middle PIP and DIP.
     [[idx, 1], [idx, 2], [mdl, 1], [mdl, 2]].forEach(([c, i], k) => {
       joints[k].set(c[i][0], c[i][1], c[i][2], 5.8);
       jointAx[k].set(c[i + 1][0] - c[i - 1][0], c[i + 1][1] - c[i - 1][1], c[i + 1][2] - c[i - 1][2]).normalize();
     });
-    // Plaster round the index's middle phalanx, its pad on the back of the finger.
-    const A2 = new THREE.Vector3(...idx[1]), B2 = new THREE.Vector3(...idx[2]);
+    // Plaster round the index's last knuckle, its gauze pad on the back of the joint.
+    const A2 = new THREE.Vector3(...idx[1]), B2 = new THREE.Vector3(...idx[3]);
     const ax2 = B2.clone().sub(A2).normalize();
     const up2 = new THREE.Vector3(0, 1, 0).addScaledVector(ax2, -ax2.y).normalize();
-    const band = new THREE.Mesh(new THREE.CylinderGeometry(6.2, 6.25, 9, 48, 1, true), plaster);
-    band.position.lerpVectors(A2, B2, 0.55);
+    const band = new THREE.Mesh(new THREE.CylinderGeometry(5.95, 6.0, 7.5, 48, 1, true), plaster);
+    band.position.set(...idx[2]).addScaledVector(ax2, -0.6);
     band.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), ax2);
     band.scale.set(1.06, 1, 0.92);
     band.quaternion.multiply(new THREE.Quaternion());
     fingers.add(band);
     const pad = new THREE.Mesh(new THREE.SphereGeometry(1, 24, 12), gauze);
-    pad.scale.set(3.4, 0.55, 3.0);
-    pad.position.copy(band.position).addScaledVector(up2, 5.85);
+    pad.scale.set(3.0, 0.5, 2.6);
+    pad.position.copy(band.position).addScaledVector(up2, 5.55);
     pad.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), up2);
     fingers.add(pad);
     // Short, bitten nails on the fingertips, lying on the top of each last joint.
@@ -1637,15 +1661,15 @@ export class Garden {
       const ax = Bv.clone().sub(A).normalize();
       const up = new THREE.Vector3(0, 1, 0).addScaledVector(ax, -ax.y).normalize();
       const n = new THREE.Mesh(new THREE.SphereGeometry(1, 24, 12), nail);
-      n.scale.set(size * 0.74, 0.34, size * 1.0);
-      n.position.copy(Bv).addScaledVector(ax, -size * 0.35).addScaledVector(up, r * 0.86);
+      n.scale.set(size * 0.7, 0.3, size * 0.82);
+      n.position.copy(Bv).addScaledVector(ax, -size * 0.25).addScaledVector(up, r * 0.92 - 0.12);
       n.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(new THREE.Vector3().crossVectors(up, ax), up, ax));
       fingers.add(n);
     };
-    nailOn(idx[2], idx[3], 5.2, 3.9);
-    nailOn(mdl[2], mdl[3], 5.4, 4.0);
-    // The ink, on the back of the middle finger's middle phalanx, where it shows.
-    skin.uniforms.uInk.value.set(-33, 1.2, -30, 3.6);
+    nailOn(idx[2], idx[3], 4.6, 3.6);
+    nailOn(mdl[2], mdl[3], 4.75, 3.7);
+    // The ink, a fountain pen's smudge on the side of the middle finger, where it shows.
+    skin.uniforms.uInk.value.set(-15.5, -1.6, -34, 2.6);
     this.fingers = fingers;
     for (const o of group.children) o.renderOrder = 2;
   }
@@ -1661,7 +1685,8 @@ export class Garden {
         tPortalBlur: { value: null },
         uBlurMix: { value: 0 },
         uM: { value: 1 },
-        uSide: { value: 512 },
+        uRectC: { value: new THREE.Vector2() },
+        uRectS: { value: new THREE.Vector2(512, 512) },
         uDiscR: { value: 200 },
         uBarrel: { value: 0.08 },
         uFringe: { value: 0.012 },
@@ -1786,7 +1811,7 @@ export class Garden {
     u.uTime.value = this.time;
     u.uSkyOcc.value = this.skyOcc;
     u.uExpo.value = this.expo;
-    this.farExpo.value = this.expo * 0.5;
+    this.farExpo.value = this.expo * 0.44;
     const cam = this.camera;
     const focus = Math.max(this.focus, 0.05);
     cam.near = clamp(0.05 * focus, 0.02, 2);
@@ -1818,6 +1843,7 @@ export class Garden {
   // Everything the composer's frame needs before it renders the mid layer: the far layer blurred,
   // the image in the glass, and the near layer blurred.
   prerender(renderer) {
+    this.setMidVisible(true);
     const cam = this.camera;
     const { x: w, y: h } = this.size;
     const prevTarget = renderer.getRenderTarget();
@@ -1827,17 +1853,25 @@ export class Garden {
     const farZ = cam.position.y - (-35);
     renderer.setRenderTarget(this.farTarget);
     renderer.render(this.farScene, cam);
-    const farSigma = (this.coc(farZ) / 2.4 + 1.2 * (h / 1080)) / 2;
+    // The backdrop is blurred as by a wider aperture than the eye's, the way a macro lens isolates
+    // its subject: the leaf in front stays the clear one.
+    const farSigma = (this.coc(farZ) * 2.2 / 2.4 + 1.2 * (h / 1080)) / 2;
     this.backdropMat.uniforms.tFar.value = this.blurFar.run(renderer, this.farTarget.texture, this.farTarget.width, this.farTarget.height, farSigma);
     this.backdropMat.uniforms.uMainVP.value.multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse);
 
-    // The glass.
+    // The glass: the mid layer drawn again from the eye, magnified, into a target that covers only
+    // the part of the disc that is on screen (with a margin for the barrel and the fringe).
     const o = this.optics;
+    this.covered = false;
     if (this.loupeOn && o.discR > 1) {
-      const side = Math.min(2 * o.discR, 1.15 * Math.max(w, h));
-      const S = Math.min(1600, Math.max(256, Math.ceil(side / 64) * 64));
-      if (!this.portalTarget) this.portalTarget = new THREE.WebGLRenderTarget(S, S, { type: THREE.HalfFloatType, samples: 2 });
-      else if (this.portalTarget.width !== S) this.portalTarget.setSize(S, S);
+      const mg = 0.06 * o.discR + 4;
+      const x0 = Math.max(o.discC.x - o.discR - mg, 0), x1 = Math.min(o.discC.x + o.discR + mg, w);
+      const y0 = Math.max(o.discC.y - o.discR - mg, 0), y1 = Math.min(o.discC.y + o.discR + mg, h);
+      const rw = Math.max(x1 - x0, 8), rh = Math.max(y1 - y0, 8);
+      const scale = Math.min(1, 1600 / Math.max(rw, rh));
+      const Sx = Math.max(64, Math.ceil((rw * scale) / 16) * 16), Sy = Math.max(64, Math.ceil((rh * scale) / 16) * 16);
+      if (!this.portalTarget) this.portalTarget = new THREE.WebGLRenderTarget(Sx, Sy, { type: THREE.HalfFloatType, samples: 2 });
+      else if (this.portalTarget.width !== Sx || this.portalTarget.height !== Sy) this.portalTarget.setSize(Sx, Sy);
       const pc = this.portalCam;
       pc.position.copy(cam.position);
       pc.quaternion.copy(cam.quaternion);
@@ -1845,8 +1879,11 @@ export class Garden {
       pc.aspect = w / h;
       pc.near = cam.near;
       pc.far = cam.far;
-      const win = side / Math.abs(o.M);
-      pc.setViewOffset(w, h, o.discC.x - win / 2, h - o.discC.y - win / 2, win, win);
+      const aM = Math.abs(o.M);
+      const rcx = (x0 + x1) / 2 - o.discC.x, rcy = (y0 + y1) / 2 - o.discC.y;
+      const sx = o.discC.x + rcx / o.M, sy = o.discC.y + rcy / o.M;
+      const ww = rw / aM, wh = rh / aM;
+      pc.setViewOffset(w, h, sx - ww / 2, h - sy - wh / 2, ww, wh);
       pc.updateMatrixWorld();
       this.disc.visible = false;
       renderer.setRenderTarget(this.portalTarget);
@@ -1856,13 +1893,18 @@ export class Garden {
       gu.tPortal.value = this.portalTarget.texture;
       // The focus blur, in portal pixels.
       const blurPx = o.blurPx * (h / 1080);
-      const sigma = (blurPx / 2) * (S / side);
-      gu.tPortalBlur.value = this.blurPortal.run(renderer, this.portalTarget.texture, S, S, sigma);
+      const sigma = (blurPx / 2) * (Sx / rw);
+      gu.tPortalBlur.value = this.blurPortal.run(renderer, this.portalTarget.texture, Sx, Sy, sigma);
       gu.uBlurMix.value = sigma > 0.35 ? 1 : 0;
       gu.uM.value = o.M;
-      gu.uSide.value = side;
+      gu.uRectC.value.set(rcx, rcy);
+      gu.uRectS.value.set(rw, rh);
       gu.uDiscR.value = o.discR;
       gu.uC.value.copy(o.discC);
+      // When the glass fills the whole frame, nothing behind it can be seen: the scene pass draws
+      // only the disc (the leaf, hairs, beads and backdrop are hidden until the next frame).
+      const far2 = Math.max(o.discC.x, w - o.discC.x) ** 2 + Math.max(o.discC.y, h - o.discC.y) ** 2;
+      this.covered = far2 < (o.discR * 0.985) ** 2;
 
       // Near layer: brass and fingers, blurred by their circle of confusion.
       const cc = renderer.getClearColor(_col), ca = renderer.getClearAlpha();
@@ -1870,12 +1912,35 @@ export class Garden {
       renderer.setRenderTarget(this.nearTarget);
       renderer.render(this.nearScene, cam);
       renderer.setClearColor(cc, ca);
+      // A smaller aperture for the brass and the fingers than the eye's own: they stay soft, but
+      // the bezel keeps its form and the plaster stays legible while the eye is on the bead.
       const nz = cam.position.distanceTo(this.loupePos);
-      const nearSigma = Math.min(this.coc(nz) / 2.4, 60 * (h / 1080));
+      const nearSigma = Math.min((this.coc(nz) * 0.5) / 2.4, 60 * (h / 1080));
       this.nearTexture = this.blurNear.run(renderer, this.nearTarget.texture, w, h, nearSigma);
     } else this.nearTexture = null;
+    // The blurred push (the glass giving up): the mid layer is drawn at half resolution here, and
+    // the scene pass draws an empty scene (the director swaps it in); GardenPass blurs from this.
+    this.useMidLow = this.glass.on > 0 && this.midSigma * (h / 1080) > 3;
+    if (this.useMidLow) {
+      const lw = Math.max(1, Math.ceil(w / 2)), lh = Math.max(1, Math.ceil(h / 2));
+      if (!this.midLow) this.midLow = new THREE.WebGLRenderTarget(lw, lh, { type: THREE.HalfFloatType });
+      else if (this.midLow.width !== lw || this.midLow.height !== lh) this.midLow.setSize(lw, lh);
+      renderer.setRenderTarget(this.midLow);
+      renderer.render(this.scene, cam);
+    }
+    if (this.covered) this.setMidVisible(false);
     renderer.setRenderTarget(prevTarget);
     renderer.autoClear = prevAuto;
+  }
+
+  // Shows or hides everything of the mid layer but the glass's disc.
+  setMidVisible(on) {
+    if (this.midHidden === !on) return;
+    this.midHidden = !on;
+    this.leaf.visible = on;
+    for (const m of this.shells) m.visible = on;
+    this.beadMesh.visible = on;
+    this.backdrop.visible = on;
   }
 
   dispose() {
@@ -1889,6 +1954,7 @@ export class Garden {
     this.farTarget?.dispose();
     this.nearTarget?.dispose();
     this.portalTarget?.dispose();
+    this.midLow?.dispose();
     this.blurFar.dispose();
     this.blurNear.dispose();
     this.blurPortal.dispose();

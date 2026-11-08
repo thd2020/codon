@@ -62,6 +62,11 @@ const DIVE = { sink: 3.0, push: 8.0, skin: 9.65, cross: 10.0, flashUp: 0.35, fla
 const SKIN = { start: 9.35, end: 0.42, last: 0.27 }; // distance from the skin (mm): start of the push, its end, the last approach
 const H_END = 11.5; // eye above the bead when the glass fills the frame
 const D_END = 10.5; // the glass above the bead then
+// The push comes down onto the bead's crown a little off its top, on the side toward the glow
+// (azimuth 46 degrees, 38 degrees from the zenith at the end): there the skin mirrors bright sky,
+// the child's reflection is a small dark shape at the frame's lower edge rather than the whole frame,
+// and the line of sight through the bead's centre lands on a primary vein of the blade below.
+const PUSH = { az: 0.8, tilt: THREE.MathUtils.degToRad(38) };
 const TAN = Math.tan(THREE.MathUtils.degToRad(FOV / 2));
 
 const clamp = (x, a, b) => Math.min(b, Math.max(a, x));
@@ -131,7 +136,7 @@ class VeilPass extends Pass {
       uTime: { value: 0 },
       uPointPos: { value: new THREE.Vector2(0.5, 0.5) },
       // The far layer's mean display tone in the hub (measured), what the gradient settles to.
-      uFarTone: { value: new THREE.Vector3(0.33, 0.37, 0.4) },
+      uFarTone: { value: new THREE.Vector3(0.32, 0.38, 0.37) },
     };
     this.material = new THREE.ShaderMaterial({
       uniforms: this.uniforms,
@@ -463,7 +468,7 @@ export class Intro {
       u.uLift.value.set(0.5, 0.47, 0.66);
       u.uLiftAmount.value = 0.015;
       u.uWarmth.value = 0.02;
-      u.uContrast.value = 0.2;
+      u.uContrast.value = 0.24;
       u.uSaturation.value = 0.2;
       u.uClarity.value = 0.8;
     }
@@ -680,7 +685,12 @@ export class Intro {
     }
     this.step(Math.min(dt, 0.25));
     this.drawGate();
-    if (this.inGarden && this.state !== 'done' && this.drawing) this.garden.prerender(this.renderer);
+    if (this.inGarden && this.state !== 'done' && this.drawing) {
+      const g = this.garden;
+      g.prerender(this.renderer);
+      // In the blurred push the Garden draws its mid layer at half size itself.
+      this.look.scenePass.scene = g.useMidLow ? g.emptyScene : g.scene;
+    }
   }
 
   // While the pre-roll or the veil hides the image entirely (0:00 to 0:04), nothing of the Garden is
@@ -735,7 +745,7 @@ export class Intro {
     const g = this.garden;
     const t = this.t;
     // The dawn brightens as the image opens.
-    g.expo = 0.82 + 0.3 * smooth(T.reveal, 7.5, t);
+    g.expo = 0.84 + 0.32 * smooth(T.reveal, 7.5, t);
     if (this.diveAt == null || t < this.diveAt) this.stepHub(real);
     if (this.diveAt != null) this.stepDive(real);
     g.update(real);
@@ -986,26 +996,26 @@ export class Intro {
       let gap;
       if (td < DIVE.push) gap = logLerp(SKIN.start, SKIN.end, (td - DIVE.sink) / (DIVE.push - DIVE.sink));
       else gap = logLerp(SKIN.end, SKIN.last, smooth(DIVE.push, DIVE.cross, td));
-      cam.position.set(B.x, B.y + BEAD_R + gap, B.z);
-      // A slow turn over the whole push, so the leaf below swims rather than slides; near the skin
-      // the eye lifts a little toward the bright sky, so the mirror holds the child small, at its
-      // edge, and not over the whole frame.
+      // A slow turn over the whole push, so the leaf below swims rather than slides, and a slow
+      // swing of the axis onto the crown's glow side (see PUSH).
       const spin = 0.12 * smooth(DIVE.sink, DIVE.cross, td);
-      cam.up.set(Math.sin(spin), 0, Math.cos(spin));
-      const lift = Math.tan(THREE.MathUtils.degToRad(16)) * smooth(5.5, 9.0, td);
-      cam.lookAt(_a.copy(cam.position).add(_b.set(0, -1, lift)));
-      cam.updateMatrixWorld();
+      this.pushPose(cam, gap, PUSH.tilt * smooth(DIVE.sink, DIVE.sink + 3.2, td), spin);
       g.focus = gap;
       const hFrame = 2 * gap * TAN; // mm at the skin
       // The honest limit: the glass resolves about 10 µm (the eye's 0.1 mm over 10).
       const blurPx = Math.min((0.5 * 0.01 * 1080) / hFrame, 40);
       g.midSigma = blurPx / 2.2;
+      // The softness stays luminous: the exposure lifts as the glass gives up, so the blur reads
+      // as pearl rather than murk.
+      g.expo = 1.12 * (1 + 0.28 * smooth(10, 36, blurPx));
       g.glass.on = 1;
       g.glass.discR = d.swapR;
       g.glass.barrel = 0.08;
       g.glass.fringe = 0.012 + 0.02 * smooth(DIVE.sink, DIVE.push, td);
       // The skin, a curved mirror of sky holding the child's reflection; pressed against it, more so.
       g.mirror = smooth(DIVE.sink - 0.4, DIVE.sink + 1.0, td);
+      // Inside the bead the salt's schlieren settle to a faint waver (the salt front is MicroIntro's).
+      g.schlieren = 0.5 - 0.35 * smooth(4.0, 7.0, td);
       g.skin = smooth(7.2, 9.2, td);
       this.frameH = hFrame;
     }
@@ -1034,11 +1044,9 @@ export class Intro {
       d.rmStage = 1;
       g.loupeOn = false;
       const gap = 0.4;
-      cam.position.set(B.x, B.y + BEAD_R + gap, B.z);
-      cam.up.set(0, 0, 1);
-      cam.lookAt(B);
-      cam.updateMatrixWorld();
+      this.pushPose(cam, gap, PUSH.tilt, 0.12);
       g.focus = gap;
+      g.expo = 1.12 * 1.28;
       const hFrame = 2 * gap * TAN;
       g.midSigma = Math.min((0.5 * 0.01 * 1080) / hFrame, 40) / 2.2;
       g.glass.on = 1;
@@ -1053,6 +1061,16 @@ export class Intro {
       this.veil.capture();
       d.rmStage = 2;
     } else if (d.rmStage === 2 && this.state === 'garden') this.cross();
+  }
+
+  // The push's camera: on the line through the bead's centre at `tilt` from the zenith (toward
+  // PUSH.az), `gap` mm above the skin, looking at the centre.
+  pushPose(cam, gap, tilt, spin) {
+    const n = _c.set(Math.sin(tilt) * Math.cos(PUSH.az), Math.cos(tilt), Math.sin(tilt) * Math.sin(PUSH.az));
+    cam.position.copy(B).addScaledVector(n, BEAD_R + gap);
+    cam.up.set(Math.sin(spin), 0, Math.cos(spin));
+    cam.lookAt(B);
+    cam.updateMatrixWorld();
   }
 
   physM(H, d) {

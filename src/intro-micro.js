@@ -69,11 +69,11 @@ const CAM = [
   [3.2, 34, 16, START_A - 1],
   [4.6, 24, 2, START_A + 1],
   [6.8, 19, -12, START_A + 3],
-  [8.4, 11, -14, START_A + 4],
-  [10.3, 6.8, -8, START_A + 4],
-  [12.4, 7.0, -5, START_A + 4],
-  [14.6, 7.2, -1, START_A + 3],
-  [17, 7.5, 7, START_A + 2],
+  [8.4, 11, -13, START_A + 4],
+  [10.3, 6.8, 0, START_A + 4],
+  [12.4, 7.0, 2, START_A + 4],
+  [14.6, 7.2, 3.5, START_A + 3],
+  [17, 7.5, 8, START_A + 2],
 ];
 
 const smooth = (a, b, x) => THREE.MathUtils.smoothstep(x, a, b);
@@ -174,14 +174,15 @@ const towerFragment = /* glsl */ `
     n = normalize(n + 0.07 * flute * tng);
     float c = clamp(dot(n, v), 0.0, 1.0);
     float e = 1.0 - c;
-    float fres = 0.04 + 0.5 * pow(e, 4.0);
+    float fres = 0.03 + 0.3 * pow(e, 5.0);
     // a glass rod in water, as a lens draws one: a brighter core where it focuses the light behind
     // it, a deeper band inside each edge where it bends darker water toward you
     vec3 behind = envDome(-v);
     vec3 bent = envDome(refract(-v, n, 0.82));
     vec3 thru = mix(behind, bent, 0.8) * uTint * (1.0 + 0.05 * flute);
     thru *= 1.0 + 0.16 * pow(c, 5.0) - 0.14 * smoothstep(0.4, 0.75, e) * (1.0 - smoothstep(0.8, 0.95, e));
-    vec3 refl = envDome(reflect(-v, n)) * 1.04;
+    // what its skin mirrors, held close to the water behind it so the edge is a tone, not a line
+    vec3 refl = mix(behind, envDome(reflect(-v, n)), 0.45);
     vec3 col = mix(thru, refl, fres);
     // the low sun catching the flutes: a few soft vertical glints, warm
     col += uSun * 0.25 * pow(max(dot(reflect(-v, n), uSunDir), 0.0), 24.0);
@@ -465,12 +466,12 @@ export class MicroIntro {
     const L = (this.L = {});
     L.qFinal = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, START_YAW, 0));
     const axis = new THREE.Vector3(0, 0, 1).applyQuaternion(L.qFinal);
-    // The squeeze: out across the rod, upward and turned 35° toward the camera, so the slit and the
-    // soft cell coming through it are seen three-quarter on.
+    // The squeeze: out across the rod, upward and turned 40° toward the camera (which has risen to
+    // level by then), so the slit and the soft cell coming through it are seen three-quarter on.
     const toCam = dir(this.camE(10.3), this.camA(10.3));
     const u0 = Y.clone().addScaledVector(axis, -axis.y).normalize();
     const c0 = toCam.clone().addScaledVector(axis, -toCam.dot(axis)).addScaledVector(u0, -toCam.dot(u0)).normalize();
-    L.exit = u0.multiplyScalar(Math.cos(35 * D2R)).addScaledVector(c0, Math.sin(35 * D2R)).normalize();
+    L.exit = u0.multiplyScalar(Math.cos(40 * D2R)).addScaledVector(c0, Math.sin(40 * D2R)).normalize();
     L.qEsc = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().makeBasis(new THREE.Vector3().crossVectors(L.exit, axis), L.exit, axis));
     // Where the wall is shed: a little beyond the hero, low on the right of the last frame. The
     // soft cell swims the rest of the way to its start pose; the empty wall drifts a little further
@@ -480,7 +481,7 @@ export class MicroIntro {
     const uF = new THREE.Vector3().crossVectors(rF, fF);
     L.pEsc = fF.clone().multiplyScalar(2.5).addScaledVector(rF, 3.7).addScaledVector(uF, -1.9);
     L.pOut = L.pEsc.clone().addScaledVector(L.exit, 1.3); // where the escape leaves the soft cell
-    L.huskDrift = rF.clone().multiplyScalar(0.9).addScaledVector(uF, -0.8).addScaledVector(fF, 0.3);
+    L.huskDrift = rF.clone().multiplyScalar(0.7).addScaledVector(uF, -0.55).addScaledVector(fF, 0.3);
     // A frame for placing things as the shot 6 camera sees them: beyond (away from the camera), right, up.
     const f6 = dir(-10, START_A + 3).negate();
     L.beyond = f6;
@@ -713,7 +714,7 @@ export class MicroIntro {
       clusters.push({ center: tw.userData.tip.clone().addScaledVector(ax, -260), radius: 24, count: 150, along: ax, length: 380 });
     }
     this.crowd = new Crowd({ clusters, seed: 11, near: [40, 75], sunDir: water.sunDir });
-    this.crowd.aerial = 1 / 470;
+    this.crowd.aerial = 1 / 420;
     group.add(this.crowd.mesh);
   }
 
@@ -921,8 +922,8 @@ export class MicroIntro {
     this.flowPhase += real * this.saved.flowSpeed;
     hero.shape.uSeed.value = this.flowPhase;
 
-    // flagella: running bundle while walled, trailing loosely through the escape (never splayed
-    // across the subject), stiffening into the game's idle bundle in the glide
+    // flagella: running bundle while walled, trailing together behind it through the escape (never
+    // splayed across the subject), easing into the game's idle bundle as it swims and glides
     let bundle, omega, thrust;
     if (t < T.wall) {
       bundle = drive.bundle;
@@ -931,15 +932,25 @@ export class MicroIntro {
     } else {
       const stiff = this.glideAt !== null ? smooth(0, 0.8, gu) : 0;
       const swim = smooth(12, 13, t) * (1 - smooth(15.5, 17, t)) * (1 - stiff);
-      bundle = 0.8 - 0.25 * swim * 0 - (0.8 - 0.55) * Math.max(stiff, swim);
+      bundle = 0.8 - (0.8 - 0.55) * Math.max(stiff, swim);
       omega = 2 + 6 * swim + 4 * stiff;
       thrust = 0.25 * swim;
     }
+    // ...and paler while they trail through the escape, so they never outdraw the cell
+    this.flagellaTone(smooth(8.4, 9.2, t) * (1 - smooth(12.2, 13.8, t)) * (this.glideAt === null ? 1 : 1 - smooth(0, 0.5, gu)));
     const hd = (this._heroDrive ??= {});
     hd.thrust = thrust;
     hd.bundle = bundle;
     hd.omega = omega;
     hero.update(wdt, hd);
+  }
+
+  // The hero's filaments eased toward the pale water (0 their own colour).
+  flagellaTone(k) {
+    const fl = this.hero.flagella;
+    this.flagColors ??= fl.map((f) => f.material.uniforms.uColor.value.clone());
+    this._pale ??= new THREE.Color(0xdcecea);
+    for (let i = 0; i < fl.length; i++) fl[i].material.uniforms.uColor.value.copy(this.flagColors[i]).lerp(this._pale, 0.6 * k);
   }
 
   // Run and tumble on a seeded clock (so ?t= jumps are repeatable). pace 0 stops it.
@@ -1018,6 +1029,10 @@ export class MicroIntro {
       const d = off.length();
       const tether = b.tether ?? 3;
       if (d > tether) b.group.position.addScaledVector(off.normalize(), (d - tether) * Math.min(1, 1.5 * wdt));
+      // and keep a little way off the lens (a swollen ghost right in front of it is only a pale disc)
+      const away = this._v[1].copy(b.group.position).sub(this.camera.position);
+      const dc = away.length();
+      if (dc < 5.5) b.group.position.addScaledVector(away.normalize(), (5.5 - dc) * Math.min(1, 2 * wdt + 0.05));
       // swelling, rounding, going hypodense
       const sw = smooth(7.5 + lag, 10.5 + lag, t);
       if (!b.dividing) {
@@ -1048,7 +1063,8 @@ export class MicroIntro {
         for (const sgn of [1, -1]) {
           const pos = long.group.position.clone().addScaledVector(ax, sgn * 1.0 * long.group.scale.x);
           const b = neighbours.spawnAt({ position: pos, quaternion: long.group.quaternion }, { seed: 430 + (sgn > 0 ? 0 : 1), wall: 1 });
-          b.home = pos.clone().addScaledVector(ax, sgn * 0.6);
+          // the daughters swim off a little way into the mixed water, away from the lens
+          b.home = pos.clone().addScaledVector(ax, sgn * 1.5).addScaledVector(this.L.beyond, 8).addScaledVector(this.L.right, -2.5);
           b.lag = long.lag + (sgn > 0 ? 0.1 : 0.35);
           b.tether = 1.2;
           b.state = { run: 0.6 + (sgn > 0 ? 0.4 : 1.1), tumble: 0, axis: new THREE.Vector3(1, 0, 0), thrust: 0, bundle: 0.5 };
@@ -1165,7 +1181,7 @@ export class MicroIntro {
     u.uFrontK.value = THREE.MathUtils.clamp(0.4 * reach, 24, 160);
     // the crowd and the props sink into the depth, then go
     const rm = this.reducedMotion;
-    this.crowd.opacity = 0.6 * (1 - (rm ? (this.rmFrame > 0 ? 1 : 0) : this.late(3, 5, t, gu)));
+    this.crowd.opacity = 0.32 * (1 - (rm ? (this.rmFrame > 0 ? 1 : 0) : this.late(3, 5, t, gu)));
     const sink = rm ? (this.rmFrame > 0 ? 1 : 0) : smooth(2.8, 4.4, t);
     for (const tw of this.towers) {
       tw.material.uniforms.uFade.value = sink;
@@ -1178,7 +1194,7 @@ export class MicroIntro {
     // cells; there it is only a soft, moving veil of glow (no sharp threads) until the camera rises
     // above level in the glide. Reduced motion keeps it low until the start pose.
     const back = rm ? (this.glideAt !== null ? smooth(0, 1, gu) : 0) : this.late(13, 17.5, t, gu);
-    water.caustics = 1 - 0.6 * smooth(4, 6.5, t) * (1 - back);
+    water.caustics = 1 - 0.7 * smooth(4, 6.5, t) * (1 - back);
     water.causticThreads = smooth(5, 15, this.camElev ?? 0) * (rm && this.glideAt === null ? 0 : 1);
     this.crowd.resize(this.renderer.getDrawingBufferSize(this._size ??= new THREE.Vector2()).y, camera.fov);
   }
@@ -1249,6 +1265,7 @@ export class MicroIntro {
     hero.squeeze = null;
     hero.salt = undefined;
     hero.wobbleBoost = 1;
+    this.flagellaTone(0);
     hero.shape.uFlowAmp.value = this.saved.flowAmp;
     // hand the flow back to world time without a jump in its phase
     hero.shape.uFlowSpeed.value = this.saved.flowSpeed;
