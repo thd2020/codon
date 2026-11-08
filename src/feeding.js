@@ -1,13 +1,14 @@
 import * as THREE from 'three';
 import { MarchingCubes } from 'three/addons/objects/MarchingCubes.js';
 import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
-import { organicMaterial, tokenMaterial, capsuleSd, flowPoint, mulberry32, MAX_DENTS } from './materials.js';
+import { organicMaterial, tokenMaterial, capsuleSd, flowPoint, mulberry32, MAX_DENTS, DENT_GAP, DENT_RIM } from './materials.js';
 import { METABOLITE } from './palette.js';
 
 // Food, oxygen and endocytosis.
 //
-// Glucose: patches of tiny golden motes in the water, drifting with the drop's currents and
-// recycled around the hero. A mote that comes within 0.12 µm of the outer membrane slips through a
+// Glucose: patches of tiny pale champagne motes in the water (the metabolism's glucose bead: one
+// molecule, one colour, outside the cell and in), drifting with the drop's currents and recycled
+// around the hero. A mote that comes within 0.12 µm of the outer membrane slips through a
 // porin and is drawn to a PTS transporter in the inner membrane, where the metabolism takes it
 // (uptakeGlucose). Uptake is limited to about one glucose a second (the transporters are the
 // bottleneck) and scales with the local concentration. Each mote stands for many molecules, like
@@ -20,29 +21,32 @@ import { METABOLITE } from './palette.js';
 // Food particles: coral protein clumps (digested to amino acids) and champagne glycogen fragments
 // (digested to glucose), soft opaque lumps drifting in the water. Real E. coli can't eat them; this
 // wall-less cell has evolved endocytosis. Press R with one within 0.6 µm of the membrane:
-//   approach (0.6 s): the particle is drawn onto the membrane, to a pole's shoulder, and a dimple
-//     forms under it;
-//   invagination (1.4 s): the membrane sinks into a pocket (hero.setDent) and the particle sinks
-//     with it, always resting where it fits in the cup;
-//   seal (0.4 s): the neck of the pocket closes (pinch -> 1) into a closed bubble;
+//   approach (0.6 s): the particle is drawn onto the membrane, to a pole's shoulder, and presses a
+//     dimple into it;
+//   invagination (1.4 s): the membrane sinks into a pocket round it (hero.setDent): a round cup
+//     whose floor follows the particle's sphere at a small gap (materials.js), the particle sinking
+//     to its bottom;
+//   seal (0.4 s): the neck of the pocket narrows and closes over the particle (pinch -> 1) while it
+//     is drawn on in, leaving it in a sealed bubble with its own double film;
 //   pinch-off: the bubble becomes a free vesicle (hero.volume.vesicles, the same double film turned
-//     inside out) while the cell surface snaps back with a damped elastic bounce;
+//     inside out; its outer film is the bubble's), and where the neck closed the surface quivers in
+//     a few damped dips;
 //   transport (1.5 s) inward, to open cytoplasm on the side the player looks from;
 //   digestion (3 s): the particle brightens and, each time a monomer leaves it
 //     (metabolism.deliver), steps smaller and turns toward the colour of what it is broken into;
 //   then the emptied vesicle goes back to the envelope (its membrane is recycled) and fades.
 // Two at a time at most (the cell has two dent slots and two vesicle slots).
 //
-// Pockets go on the shoulders of the pole caps: there the cell is long behind the pocket, so a deep
-// pocket never pinches the cell's middle into a waist (which would read as a cell dividing).
+// Pockets go on the shoulders of the pole caps: there the cell is long behind the pocket, so a
+// pocket half a µm deep has room, where mid-body it would reach the axis and cut the nucleoid.
 //
 // Everything that happens to the cell happens in its REFERENCE body space, drawn through the flow
 // warp (materials.js), so the particle, the pocket and the vesicle always line up.
 //
-// Sizes: food particles are 0.1-0.128 µm in radius (the spec allowed up to 0.22). A dent holds a
-// sealed bubble of at most ~0.153 µm radius before its falloff dimples the far side of the 1 µm
-// cell, so that, less a little room, is the biggest particle this cell can swallow; the vesicle
-// round it is as large again by its double film, and a bigger one would fill the cytoplasm.
+// Sizes: food particles are 0.1-0.128 µm in radius (the spec allowed up to 0.22). A sealed pocket
+// is two cup radii and SEAL_BRIDGE deep (0.45-0.51 µm), reaching about the middle of a pole cap;
+// a bigger particle would need a pocket that cuts deep into the nucleoid, and its vesicle (as large
+// again by its double film) would fill the cytoplasm.
 //
 // Debug URL switches (for screenshots without a keyboard):
 //   ?feed=near          a food particle starts right next to the hero, within reach
@@ -59,7 +63,7 @@ import { METABOLITE } from './palette.js';
 
 const REACH = 0.6; // µm from the outer membrane to the particle's surface
 const CAPTURE = 0.12; // a glucose mote this close to the outer membrane is taken in
-const DENT_R = 0.17; // the pocket's footprint radius (µm): narrow, so the cup hugs the particle
+const DENT_R = 0.17; // the pocket's footprint (µm): DENT_RIM of it is how softly its walls meet the surface
 const T_APPROACH = 0.6;
 const T_INVAGINATE = 1.4;
 const T_SEAL = 0.4;
@@ -68,27 +72,32 @@ const T_DIGEST = 3.0;
 const T_FADE = 0.9;
 const T_PINCH = T_APPROACH + T_INVAGINATE + T_SEAL;
 
-// The sealed bubble a pocket of footprint DENT_R makes, by depth (µm): [depth, bubble centre (along
-// the normal from the surface point), largest sphere that fits in it]. Measured from the dent field
-// (CellPass dents(), mirrored below) on the cylinder; on a pole's shoulder the cap curves away and
-// the bubble is ~0.01 µm roomier, so these sizes hold everywhere.
-const BUBBLE = [
-  [0.45, -0.218, 0.112],
-  [0.5, -0.226, 0.123],
-  [0.55, -0.234, 0.132],
-  [0.6, -0.24, 0.14],
-  [0.65, -0.245, 0.147],
-  [0.7, -0.25, 0.153],
-];
-// Below this depth a sealed pocket (pinch 1) holds no bubble any more, and its surface dimple is as
-// deep as an open dent of RELAX_DIMPLE: the hand-over point of the pinch-off.
-const RELAX_SWITCH = 0.08;
-const RELAX_DIMPLE = 0.018;
+// How deep the pocket is: its floor (the bottom of the cup round the particle, which is the
+// particle's sphere plus DENT_GAP: radius rc) is D_LAND under the surface when the particle has
+// landed; at the end of the invagination the particle's top is OPEN_BRIDGE under it (depth
+// 2 rc + OPEN_BRIDGE); and while the neck seals the bubble is drawn on in to SEAL_BRIDGE, where
+// its double film comes clear of the envelope's. Measured from the dent field (materials.js
+// dentOffset, CellPass dents()) at pinch 1: from a bridge of 0.22 µm the cytoplasm between the
+// bubble's inner film and the envelope's is at least 0.014 µm deep (the field below -0.094 on the
+// axis), for every particle size and alike on the cylinder and on a pole's shoulder; the surface
+// over it is flat again.
+const D_LAND = 0.06;
+const OPEN_BRIDGE = 0.08;
+const SEAL_BRIDGE = 0.22;
+// Pinch-off: the sealed bubble shrinks away inside the new vesicle's films over T_HAND (its outer
+// film is where the vesicle's is born), then for T_RELAX the surface where the neck closed dips a
+// few times, ever less, the first up to RELAX µm deep.
+const T_HAND = 0.12;
+const T_RELAX = 1.2;
+const RELAX = 0.03;
 
 // The vesicle closes round its load: its radius is the particle's plus this. CellPass draws the
 // vesicle's inner film 0.045 µm inside its outer one (half-thickness 0.0065), and the particle's
 // lumps reach 0.97-0.98 of its radius, so any tighter and the inner membrane would cut them.
 const VES_PAD = 0.055;
+// A newborn vesicle's radius over its load's: its outer membrane, drawn 0.045 inside, is then just
+// where the sealed bubble's was (DENT_GAP off the particle), so the one takes over from the other.
+const VES_BORN = DENT_GAP + 0.045;
 // The lumen's glow while digesting: a faint blush, so the particle inside stays crisp.
 const VES_GLOW = 0.3;
 
@@ -97,11 +106,19 @@ const PER_PATCH = 48;
 const FOOD = 6;
 const BEADS = 24;
 const HUG = 0.07; // how far outside the outer membrane a mote glides on its way to a porin
+// The first patch: its centre FIRST_OUT µm out from the transporters it lies over and FIRST_UP µm
+// upstream of them, FIRST_SIGMA wide.
+const FIRST_OUT = 0.5;
+const FIRST_UP = 0.3;
+const FIRST_SIGMA = 1.2;
 
 // The metabolism's beads (metabolism.js STYLE): [radius up close (µm), smallest size on screen (px),
 // brightness]. The monomers leaving a vesicle and the motes coming in through a PTS are drawn to
 // match, so where the metabolism's own bead takes over nothing changes size.
 const C_BEAD = { glucose: [0.0095, 2.2, 1.1], aminoAcid: [0.0085, 2.8, 1.4] };
+// The glucose motes are that bead's colour and value; out in the water, unveiled by the cell's
+// films, they are drawn this much brighter so the two read alike (matched on screen).
+const MOTE_LIFT = 1.0;
 
 // Protein food is coral, turned off METABOLITE.protein's pink so it never merges with the pinks of
 // the plasmid and the vesicle's lumen.
@@ -128,6 +145,7 @@ const _d = new THREE.Vector3();
 const _o = new THREE.Vector3();
 const _m = new THREE.Matrix4();
 const _inv = new THREE.Matrix4();
+const _bodyInv = new THREE.Matrix4();
 const _c = new THREE.Color();
 const UP = new THREE.Vector3(0, 1, 0);
 const NO_KEYS = new Set();
@@ -250,32 +268,7 @@ function glycogenGeo(seed) {
   return bakeBlob(balls, { blend: 0.045, lump: 0.012, freq: 21, res: 38 });
 }
 
-// ------------------------------------------------------------------------------------- the dent field
-// JS mirror of CellPass dents() + the reference capsule: > 0 outside the cell (and inside a
-// pocket), 0 on the outer membrane.
-function heroField(shape, p) {
-  let o = capsuleSd(p);
-  for (let k = 0; k < MAX_DENTS; k++) {
-    const N = shape.uDentN.value[k];
-    const depth = N.w;
-    if (depth <= 0) continue;
-    const C = shape.uDentC.value[k];
-    const r = C.w;
-    const dx = p.x - C.x, dy = p.y - C.y, dz = p.z - C.z;
-    const along = dx * N.x + dy * N.y + dz * N.z;
-    const l2 = dx * dx + dy * dy + dz * dz - along * along;
-    const near = THREE.MathUtils.smoothstep(along, -2.2 * r - depth, -0.6 * r);
-    const pocket = depth * Math.exp(-l2 / (r * r)) * near;
-    const lid = shape.uDentP.value[k] * pocket * Math.exp(-(((along + 0.35 * r) / (0.45 * r)) ** 2));
-    o += pocket - 1.1 * lid;
-  }
-  return o;
-}
-
-// 26 directions round a sphere, to test that a ball fits in a pocket.
-const PROBES = [];
-for (let x = -1; x <= 1; x++) for (let y = -1; y <= 1; y++) for (let z = -1; z <= 1; z++) if (x || y || z) PROBES.push(new THREE.Vector3(x, y, z).normalize());
-
+// ------------------------------------------------------------------------------------- the cell's surface
 // The nearest point of the reference capsule (radius 0.5) to p, and the outward normal there.
 function onSurface(p, pos, normal) {
   const z = THREE.MathUtils.clamp(p.z, -0.5, 0.5);
@@ -354,8 +347,8 @@ export class Feeding {
     const legend = (key, hex) => new THREE.Color(metabolism?.legend?.find?.((x) => x.key === key)?.color ?? hex);
     this.cGlucose = legend('glucose', METABOLITE.glucose);
     this.cAmino = legend('aminoAcid', METABOLITE.aminoAcid);
-    // What a digesting particle turns toward: amino-acid green, glucose gold.
-    this.cDigest = { protein: new THREE.Color(METABOLITE.aminoAcid), glycogen: new THREE.Color(METABOLITE.glucose) };
+    // What a digesting particle turns toward: amino-acid green, glucose's champagne.
+    this.cDigest = { protein: new THREE.Color(METABOLITE.aminoAcid), glycogen: this.cGlucose };
 
     hero.group.updateWorldMatrix(true, true);
     if (params.get('feedcam')) {
@@ -367,6 +360,11 @@ export class Feeding {
       camera.lookAt(g);
     }
     this.syncCamera();
+    // Every mesh Feeding draws (the motes, the food, the monomers leaving a vesicle) lives in this one
+    // group, in world space, so it can be hidden and shown as one (the opening does).
+    this.group = new THREE.Group();
+    this.group.name = 'feeding';
+    scene.add(this.group);
     this.buildGlucose();
     this.buildFood();
     this.buildBeads();
@@ -411,7 +409,11 @@ export class Feeding {
     const geo = new THREE.IcosahedronGeometry(1, 2);
     this.motes = new THREE.InstancedMesh(geo, tokenMaterial({ shape: this.hero.shape }), n);
     this.motes.frustumCulled = false;
-    this.scene.add(this.motes);
+    // nothing is drawn until the first update places the motes (an instance starts as a 1 µm ball at
+    // the origin)
+    _m.makeScale(0, 0, 0);
+    for (let i = 0; i < n; i++) this.motes.setMatrixAt(i, _m);
+    this.group.add(this.motes);
     this.mBase = new Float32Array(n * 3); // where the current has carried it (world)
     this.mPos = new Float32Array(n * 3); // where it is drawn on its way in (world)
     this.mSeed = new Float32Array(n);
@@ -425,21 +427,42 @@ export class Feeding {
     this.mAlive = new Uint8Array(n);
     this.taken = []; // motes on their way to a transporter
     this.takenPool = [];
-    this.gold = new THREE.Color(METABOLITE.glucose);
+    // A mote is the metabolism's glucose bead out in the water: its colour (the legend's) at its
+    // brightness, MOTE_LIFT more to make up for the water's veil over it
+    this.sugar = this.cGlucose.clone().multiplyScalar(C_BEAD.glucose[2] * MOTE_LIFT);
     for (let i = 0; i < n; i++) {
       this.mSeed[i] = this.rng() * 100;
       this.mSize[i] = 0.014 + this.rng() * 0.005;
       // a little spread in tone so the patch has life, never in hue
       this.mTone[i] = 0.92 + this.rng() * 0.22;
-      this.motes.setColorAt(i, _c.copy(this.gold).multiplyScalar(this.mTone[i]));
+      this.motes.setColorAt(i, _c.copy(this.sugar).multiplyScalar(this.mTone[i]));
     }
     this.patches = Array.from({ length: PATCHES }, (_, k) => ({ k, c: new THREE.Vector3(), sigma: 2, axis: new THREE.Vector3(1, 0, 0), n0: PER_PATCH, alive: 0 }));
-    // Start in sugar: one patch round the hero, slightly to the side away from the camera; the
-    // others a little way off.
+    // Start in sugar: one patch round the hero, the others a little way off. The first lies over the
+    // glucose transporters that face the camera most, a little upstream of them (the drop's current
+    // carries it on across the cell), so its nearest motes are a few tenths of a µm off the membrane
+    // there: the first is taken in within about two seconds of the start, and the energy route
+    // lights up at once.
     const g = this.hero.group.position;
-    const toCam = _w.copy(this.camera.position).sub(g).setY(0).normalize();
-    const side = _v.crossVectors(UP, toCam).normalize();
-    this.placePatch(this.patches[0], _p.copy(g).addScaledVector(side, -0.9).addScaledVector(toCam, -0.8).add(_s.set(0, -0.2, 0)), 1.6, true);
+    const body = this.hero.body;
+    const toCam = _w.copy(this.camera.position).sub(g).normalize();
+    let at = null, facing = -Infinity;
+    for (const s of this.hero.sites?.pts ?? []) {
+      const face = _v.copy(s.normal).transformDirection(body.matrixWorld).dot(toCam);
+      if (face > facing) {
+        facing = face;
+        at = s;
+      }
+    }
+    if (at) {
+      _d.copy(at.normal).transformDirection(body.matrixWorld);
+      _p.copy(at.pos).applyMatrix4(body.matrixWorld).addScaledVector(_d, FIRST_OUT);
+      _p.addScaledVector(currentVel(_p, 0, _v).normalize(), -FIRST_UP);
+    } else {
+      const side = _v.crossVectors(UP, _w.setY(0).normalize()).normalize();
+      _p.copy(g).addScaledVector(side, -0.9).addScaledVector(_w, -0.8).add(_s.set(0, -0.2, 0));
+    }
+    this.placePatch(this.patches[0], _p, FIRST_SIGMA, true);
     for (let k = 1; k < PATCHES; k++) this.placePatch(this.patches[k], this.aroundHero(6, 12, _p), 1.3 + this.rng() * 0.7, true);
     this.motes.instanceColor.needsUpdate = true;
   }
@@ -458,17 +481,18 @@ export class Feeding {
     patch.sigma = sigma;
     // a plume drawn out by the current, not a ball
     patch.axis.set(this.rng() - 0.5, (this.rng() - 0.5) * 0.4, this.rng() - 0.5).normalize();
-    const g = this.hero.group.position;
+    _bodyInv.copy(this.hero.body.matrixWorld).invert();
     let seeded = 0;
     for (let j = 0; j < PER_PATCH; j++) {
       const i = patch.k * PER_PATCH + j;
       if (this.mAlive[i] === 2) continue;
-      // gaussian scatter (Box-Muller), stretched along the plume, never starting inside the hero
+      // gaussian scatter (Box-Muller), stretched along the plume, never starting inside the hero or
+      // where it would be taken in at once
       for (let tries = 0; tries < 8; tries++) {
         const r = sigma * Math.sqrt(-2 * Math.log(1 - this.rng() * 0.98));
         _v.set(this.rng() - 0.5, this.rng() - 0.5, this.rng() - 0.5).normalize().multiplyScalar(r);
         _v.addScaledVector(patch.axis, _v.dot(patch.axis) * 0.8).add(centre);
-        if (_v.distanceTo(g) > 1.4) break;
+        if (capsuleSd(_o.copy(_v).applyMatrix4(_bodyInv)) > CAPTURE + 0.08) break;
       }
       this.mBase[i * 3] = _v.x;
       this.mBase[i * 3 + 1] = _v.y;
@@ -624,7 +648,7 @@ export class Feeding {
     const t = this.time;
     const mesh = this.motes;
     const col = mesh.instanceColor.array;
-    const gold = this.gold, cg = this.cGlucose;
+    const sugar = this.sugar, cg = this.cGlucose;
     // As it is born at the transporter the metabolism's glucose bead is half grown (and brightened
     // by half): a mote on its way in ends at that size and brightness, then it takes over.
     const born = 0.5 * Math.max(C_BEAD.glucose[0], C_BEAD.glucose[1] * this.px);
@@ -639,9 +663,9 @@ export class Feeding {
         s = this.mSize[i] * ease(this.mFade[i]);
         if (this.mLit[i]) {
           const k = this.mTone[i];
-          col[o] = gold.r * k;
-          col[o + 1] = gold.g * k;
-          col[o + 2] = gold.b * k;
+          col[o] = sugar.r * k;
+          col[o + 1] = sugar.g * k;
+          col[o + 2] = sugar.b * k;
           this.mLit[i] = 0;
           lit = true;
         }
@@ -649,16 +673,15 @@ export class Feeding {
         _p.set(this.mPos[o], this.mPos[o + 1], this.mPos[o + 2]);
         // Caught: it swells a little and brightens as it glides in (so the eye can tell it from the
         // drifting ones), then narrows through the porin and the transporter to the bead's size.
-        // It stays a saturated gold while it is out in the pale water, and only takes the bead's own
-        // colour in the periplasm.
+        // Through the membranes it settles to the bead's own brightness as the bead is born.
         const u = this.mU[i], gl = this.mGlide[i];
         const big = this.mSize[i] * (1 + 0.35 * ease(u / 0.3));
         const k = ease((u - gl) / (1 - gl));
         s = (big + (born - big) * k) * ease(this.mFade[i]);
         const tone = (this.mTone[i] + (1.3 - this.mTone[i]) * ease(u / 0.3)) * (1 - k);
-        col[o] = gold.r * tone + cg.r * bornB * k;
-        col[o + 1] = gold.g * tone + cg.g * bornB * k;
-        col[o + 2] = gold.b * tone + cg.b * bornB * k;
+        col[o] = sugar.r * tone + cg.r * bornB * k;
+        col[o + 1] = sugar.g * tone + cg.g * bornB * k;
+        col[o + 2] = sugar.b * tone + cg.b * bornB * k;
         this.mLit[i] = 1;
         lit = true;
       }
@@ -807,7 +830,7 @@ export class Feeding {
       const mat = organicMaterial({ color: 0xffffff, glow: kind === 'protein' ? 0.16 : 0.2, translucency: 0.6, shape: this.hero.shape });
       const mesh = new THREE.Mesh(geos[kind][Math.floor(k / 2) % 3], mat);
       mesh.frustumCulled = false;
-      this.scene.add(mesh);
+      this.group.add(mesh);
       const f = { kind, mesh, mat, radius: 0.12, base: new THREE.Vector3(), seed: this.rng() * 100, spin: new THREE.Vector3(), fade: 1, engulf: null, c0: new THREE.Color() };
       this.food.push(f);
       this.respawnFood(f, this.aroundHero(3, 11, _p), true);
@@ -839,7 +862,6 @@ export class Feeding {
     f.mat.uniforms.uColor.value.copy(f.c0);
     f.mat.uniforms.uNearFade.value.set(0.5, 1.6);
     f.mat.uniforms.uPulse.value = 1;
-    if (f.mesh.parent !== this.scene) this.scene.add(f.mesh);
     f.base.copy(at);
     f.mesh.position.copy(at);
     f.mesh.quaternion.setFromEuler(new THREE.Euler(this.rng() * 6, this.rng() * 6, this.rng() * 6));
@@ -904,7 +926,7 @@ export class Feeding {
   buildBeads() {
     this.beads = new THREE.InstancedMesh(new THREE.IcosahedronGeometry(1, 2), tokenMaterial({ shape: this.hero.shape }), BEADS);
     this.beads.frustumCulled = false;
-    this.hero.body.add(this.beads);
+    this.group.add(this.beads);
     this.beadState = Array.from({ length: BEADS }, () => ({ on: false, from: new THREE.Vector3(), to: new THREE.Vector3(), at: new THREE.Vector3(), t: 0, th: 0, retry: 0, seed: this.rng() * 100, kind: 'glucose', handed: false }));
     _m.makeScale(0, 0, 0);
     for (let i = 0; i < BEADS; i++) {
@@ -1000,7 +1022,8 @@ export class Feeding {
         s *= 1 - ease((b.th - 0.12) / 0.04);
         if (b.th >= 0.16) b.on = false;
       }
-      _m.makeScale(s, s, s).setPosition(b.at);
+      // b.at is in the cell's reference space: drawn through its body
+      _m.makeScale(s, s, s).setPosition(b.at).premultiply(this.hero.body.matrixWorld);
       this.beads.setMatrixAt(i, _m);
       const c = b.kind === 'glucose' ? this.cGlucose : this.cAmino;
       const k = st[2] * (1 + 0.5 * ease(u));
@@ -1029,9 +1052,9 @@ export class Feeding {
       if (blocked || (rec && c.p.distanceTo(rec) < 0.3) || (other && c.p.distanceTo(other.C) < 0.62)) continue;
       // the particle's way there, to rest just over the membrane
       const travel = _v.copy(c.p).addScaledVector(c.n, r + 0.03).distanceTo(ref);
-      // Mid-body pockets pinch the cell into a waist, so the further along the profile from the
+      // A mid-body pocket would reach the cell's axis, so the further along the profile from the
       // middle (to a 35° shoulder) the better; the cap's very tip is the receptors' (and a pocket
-      // there would sink the length of the cell).
+      // there would sink along the length of the cell).
       const arc = c.tilt > 0 ? 0.5 + 0.5 * THREE.MathUtils.degToRad(c.tilt) : Math.abs(c.p.z);
       const waist = 0.8 * (1 - smooth(0.3, 0.8, arc)) + 0.4 * smooth(60, 75, c.tilt);
       let patch = 0;
@@ -1051,29 +1074,29 @@ export class Feeding {
 
   start(f, slot) {
     const hero = this.hero;
+    const body = hero.body;
     // a particle caught while still fading in is caught whole
     f.fade = 1;
-    f.mesh.scale.setScalar(f.radius);
-    const ref = f.mesh.position.clone().applyMatrix4(_inv.copy(hero.body.matrixWorld).invert());
+    _inv.copy(body.matrixWorld).invert();
+    const ref = f.mesh.position.clone().applyMatrix4(_inv);
     const C = new THREE.Vector3(), n = new THREE.Vector3();
     this.pocketSite(ref, f.radius, C, n);
-    // How deep a pocket this particle needs: a sealed bubble with ~0.024 µm to spare round it.
-    const need = f.radius + 0.024;
-    let row = BUBBLE[BUBBLE.length - 1];
-    for (const b of BUBBLE) if (b[2] >= need) { row = b; break; }
+    const rc = f.radius + DENT_GAP;
     const e = {
       food: f,
       slot,
       t: 0,
       C,
       n,
-      depth: row[0],
-      along: f.radius + 0.06, // where the particle's centre sits along the normal (µm from C)
-      fit: f.radius + 0.032, // the last place it fitted in the cup
+      rc,
+      // the particle, in reference body space (it is drawn there through the body every frame), and
+      // its turn relative to the body
+      pos: ref.clone(),
+      quat: body.getWorldQuaternion(new THREE.Quaternion()).invert().multiply(f.mesh.quaternion),
       from: ref,
-      ball: { center: ref.clone(), radius: f.radius }, // the particle, for the dent's cup profile
+      ball: { center: ref.clone(), radius: f.radius }, // the sphere the pocket's floor hugs
+      size: f.radius, // its radius as drawn (it shrinks as it is digested)
       ves: null,
-      relaxB: -1,
       shrink: 1,
       shrinkGoal: 1,
       mix: 0,
@@ -1088,8 +1111,6 @@ export class Feeding {
       home: null,
     };
     f.engulf = e;
-    hero.body.attach(f.mesh);
-    f.mesh.position.copy(ref);
     // inside the cell it is seen from close by: only dissolve it right at the lens
     f.mat.uniforms.uNearFade.value.set(0.08, 0.3);
     this.engulfs[slot] = e;
@@ -1104,31 +1125,8 @@ export class Feeding {
     }
   }
 
-  // Does a ball of radius r fit at a along the pocket's axis?
-  fitsAt(e, a, r) {
-    const shape = this.hero.shape;
-    _p.copy(e.C).addScaledVector(e.n, a);
-    if (heroField(shape, _p) <= 0) return false;
-    for (let k = 0; k < PROBES.length; k++) if (heroField(shape, _w.copy(_p).addScaledVector(PROBES[k], r)) <= 0) return false;
-    return true;
-  }
-
-  // Lowest place along the pocket's axis where a ball of radius r fits (the particle resting in
-  // the cup as it deepens), stepping on from where it fitted last frame.
-  cupFit(e, r) {
-    const top = r + 0.02;
-    let a = Math.min(e.fit, top);
-    if (this.fitsAt(e, a, r)) {
-      while (a > -0.6 && this.fitsAt(e, a - 0.004, r)) a -= 0.004;
-    } else {
-      while (a < top && !this.fitsAt(e, a, r)) a += 0.004;
-    }
-    e.fit = a;
-    return a;
-  }
-
-  // The approach: drawn onto the membrane on a curve that keeps clear of the cell, settling into
-  // the dimple at the end.
+  // The approach: drawn onto the membrane on a curve that keeps clear of the cell, pressing into
+  // its dimple at the end.
   approachPoint(e, u, target) {
     const keep = (e.food.radius + 0.03) * (1 - ease((u - 0.65) / 0.35));
     target.lerpVectors(e.from, target, ease(u));
@@ -1143,60 +1141,48 @@ export class Feeding {
   stepEngulf(e, dt) {
     const hero = this.hero;
     const f = e.food;
-    const m = f.mesh;
     e.t += dt;
     const t = e.t;
+    const rc = e.rc;
     const vols = hero.volume.vesicles;
 
-    // The membrane.
-    let depth = 0, pinch = 0;
-    if (t < T_APPROACH) depth = 0.07 * ease(t / T_APPROACH);
-    else if (t < T_APPROACH + T_INVAGINATE) depth = 0.07 + (e.depth - 0.07) * ease((t - T_APPROACH) / T_INVAGINATE);
-    else if (t < T_PINCH) {
-      depth = e.depth;
-      pinch = ease((t - T_APPROACH - T_INVAGINATE) / T_SEAL);
-    } else {
-      // Pinch-off: the sealed bubble shrinks away into the neck while the vesicle takes its place,
-      // then the freed surface springs back with a few damped bounces.
-      const tr = t - T_PINCH;
-      const d = e.depth * Math.exp(-tr / 0.08);
-      if (d > RELAX_SWITCH) {
-        depth = d;
-        pinch = 1;
-      } else {
-        if (e.relaxB < 0) e.relaxB = tr;
-        // A damped spring released from the dimple, moving outward fast: past flat it bulges out
-        // (drawn flat: a dent can only push in), then it rebounds into smaller and smaller dips.
-        const tb = tr - e.relaxB;
-        const w = (2 * Math.PI) / 0.3;
-        const x = Math.exp(-tb / 0.3) * (RELAX_DIMPLE * Math.cos(w * tb) - 0.04 * Math.sin(w * tb));
-        depth = tb < 1.2 ? Math.max(x, 0) : 0;
-        pinch = 0;
-      }
-    }
-    e.ball.radius = t < T_PINCH ? f.radius : 0;
-    e.ball.center.copy(m.position);
-    hero.setDent(e.slot, { center: e.C, normal: e.n, radius: DENT_R, depth, pinch, particle: e.ball });
-
-    // The particle.
+    // The particle, and the pocket: a cup whose floor is the particle's sphere DENT_GAP larger, so
+    // wherever the particle goes the cup hugs it (hero.setDent with the particle).
+    let pinch = 0, cup;
     if (t < T_PINCH) {
-      if (t < T_APPROACH + T_INVAGINATE) {
-        const fit = this.cupFit(e, f.radius + 0.012);
-        e.along += (fit - e.along) * (1 - Math.exp(-dt / 0.06));
-      } else {
-        // sealing: the particle has settled, so the search for where to digest it can begin
-        if (!e.search) this.beginSpot(e, m.position, f.radius + VES_PAD);
+      let depth; // the cup's floor under the surface
+      if (t < T_APPROACH) depth = D_LAND;
+      else if (t < T_APPROACH + T_INVAGINATE) depth = D_LAND + (2 * rc + OPEN_BRIDGE - D_LAND) * ease((t - T_APPROACH) / T_INVAGINATE);
+      else {
+        // sealing: the neck closes over the particle while it is drawn on in
+        pinch = ease((t - T_APPROACH - T_INVAGINATE) / T_SEAL);
+        depth = 2 * rc + OPEN_BRIDGE + (SEAL_BRIDGE - OPEN_BRIDGE) * pinch;
+        // where the vesicle will be born is known: the search for where to digest it can begin
+        if (!e.search) this.beginSpot(e, _p.copy(e.C).addScaledVector(e.n, -rc - SEAL_BRIDGE), f.radius + VES_PAD);
         this.stepSpot(e.search, 150);
       }
-      const at = _d.copy(e.C).addScaledVector(e.n, e.along);
-      if (t < T_APPROACH) this.approachPoint(e, t / T_APPROACH, at);
-      m.position.copy(at);
+      e.pos.copy(e.C).addScaledVector(e.n, rc - depth);
+      if (t < T_APPROACH) this.approachPoint(e, t / T_APPROACH, e.pos);
+      e.ball.center.copy(e.pos);
+      e.size = f.radius;
     } else {
       if (!e.ves) this.pinchOff(e);
       const v = e.ves;
       const tt = t - T_PINCH;
-      // birth: the film takes over from the bubble's
-      v.membrane = Math.min(1, tt / 0.12);
+      // birth: the film takes over from the bubble's, which shrinks away inside it
+      v.membrane = Math.min(1, tt / T_HAND);
+      if (tt < T_HAND) {
+        pinch = 1;
+        cup = rc + (-0.1 - rc) * ease(tt / T_HAND);
+      } else {
+        // Where the neck closed the surface dips a few times, ever less: the cup's sphere lowered
+        // onto it and lifted off, so each dip is round. Lowered x below where its rim's blend first
+        // reaches the surface, it dips the surface x^2 / (4 rim) deep (for dips up to the rim).
+        const tb = tt - T_HAND;
+        const dip = RELAX * Math.exp(-tb / 0.3) * Math.max(Math.sin((2 * Math.PI * tb) / 0.35), 0);
+        const rim = DENT_RIM * DENT_R;
+        e.ball.center.copy(e.C).addScaledVector(e.n, rc + rim - Math.sqrt(4 * rim * dip));
+      }
       // If the player has swung the camera round since the spot was picked, pick again (once).
       if (!e.repicked && tt > T_TRANSPORT * 0.45) {
         e.repicked = true;
@@ -1231,7 +1217,7 @@ export class Feeding {
       f.mat.uniforms.uColor.value.copy(f.c0).lerpHSL(e.cMono, e.mix);
       // the film closes round its load as it travels, and as the load is eaten
       const snug = f.radius * e.shrink + VES_PAD;
-      let radius = snug + (f.radius + 0.06 - snug) * Math.max(0, 1 - tt / 0.5);
+      let radius = snug + (f.radius + VES_BORN - snug) * Math.max(0, 1 - tt / 0.5);
       // The emptied vesicle goes back to the envelope it came from (its membrane is recycled into
       // it, or the cell would lose membrane with every meal), shrinking as it fades.
       const tf = td - T_DIGEST;
@@ -1249,20 +1235,37 @@ export class Feeding {
       }
       v.radius = radius;
       // a slight drift inside, never enough to touch the inner film
-      m.position.copy(v.pos).add(wander(f.seed, this.time, 0.003, _v));
-      m.scale.setScalar(Math.max(f.radius * e.shrink * k, 1e-4));
-      m.quaternion.premultiply(_q.setFromAxisAngle(_s.copy(f.spin).normalize(), f.spin.length() * 0.5 * dt));
-      if (tf >= T_FADE) this.finish(e);
+      e.pos.copy(v.pos).add(wander(f.seed, this.time, 0.003, _v));
+      e.size = Math.max(f.radius * e.shrink * k, 1e-4);
+      e.quat.premultiply(_q.setFromAxisAngle(_s.copy(f.spin).normalize(), f.spin.length() * 0.5 * dt));
+      if (tf >= T_FADE) {
+        this.finish(e);
+        return;
+      }
     }
+    // the dent goes off once the surface has settled
+    if (t >= T_PINCH + T_HAND + T_RELAX) hero.setDent(e.slot, { depth: 0, pinch: 0 });
+    else hero.setDent(e.slot, { center: e.C, normal: e.n, radius: DENT_R, pinch, particle: e.ball, cup });
     if (vols && e.ves && this.engulfs[e.slot] === e) vols[e.slot] = e.ves;
+    this.placeEngulfed(e);
+  }
+
+  // Draw an engulfed particle where it is in the cell: its reference place and turn, through the
+  // body (Feeding's meshes all live in its own group, in the world).
+  placeEngulfed(e) {
+    const m = e.food.mesh;
+    const body = this.hero.body;
+    m.position.copy(e.pos).applyMatrix4(body.matrixWorld);
+    m.quaternion.copy(body.getWorldQuaternion(_q)).multiply(e.quat);
+    m.scale.setScalar(e.size * _s.setFromMatrixScale(body.matrixWorld).x);
   }
 
   // The bubble becomes a vesicle: a double film round the particle, centred where it sits, which
   // then travels inward to a spot of open cytoplasm in view (the search began during the seal).
   pinchOff(e) {
     const f = e.food;
-    const pos = f.mesh.position.clone();
-    e.ves = { pos: pos.clone(), radius: f.radius + 0.06, glow: 0, membrane: 0, kind: f.kind === 'protein' ? 'protein' : 'glycogen' };
+    const pos = e.pos.clone();
+    e.ves = { pos: pos.clone(), radius: f.radius + VES_BORN, glow: 0, membrane: 0, kind: f.kind === 'protein' ? 'protein' : 'glycogen' };
     e.v0 = pos.clone();
     if (!e.search) this.beginSpot(e, pos, f.radius + VES_PAD);
     this.stepSpot(e.search, Infinity);
@@ -1409,7 +1412,6 @@ export class Feeding {
     const vols = this.hero.volume.vesicles;
     if (vols) vols[e.slot] = undefined;
     this.engulfs[e.slot] = null;
-    this.scene.attach(f.mesh);
     this.respawnFood(f, this.aroundHero(7, 11, _p));
   }
 
@@ -1474,7 +1476,7 @@ export class Feeding {
     if (newest) {
       a.title = newest.ves ? VESICLE_TITLE : POCKET_TITLE;
       a.sub = newest.ves ? VESICLE_SUB : POCKET_SUB;
-      flowPoint(hero.shape, newest.ves ? newest.ves.pos : newest.food.mesh.position, this.vesicleTag.position);
+      flowPoint(hero.shape, newest.pos, this.vesicleTag.position);
     }
     this.state.engulfing = active > 0;
     this.state.engulfCount = active;

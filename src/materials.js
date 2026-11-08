@@ -32,11 +32,8 @@ export function mulberry32(seed) {
 //   amp, speed, seed: the slow flow (bulge size in µm, how fast it travels, phase).
 //   wobble: fine ripple on the skin in µm.
 //   thrust (0..1) and turn (body x/y curvature) are set every frame by the cell from its motion.
-//   dents: MAX_DENTS pockets pushed inward along -normal (endocytosis), in reference body space:
-//          center (point on the reference surface), normal (outward, unit), radius (µm footprint),
-//          depth (µm, how far the pocket sinks), pinch (0..1: at 1 the membrane has sealed over the
-//          opening and the pocket's contents sit in a closed bubble). CellPass draws them.
-//          Set with setDent(shape, i, {...}); depth 0 switches a dent off.
+//   dents: MAX_DENTS endocytic pockets carved into the cell, in reference body space (setDent below
+//          says how). CellPass draws them; dentOffset() is the same field in JS.
 // Call syncShape(shape, body) once per frame (before rendering) with the cell's body Object3D.
 // ---------------------------------------------------------------------------------------------
 export const MAX_DENTS = 2;
@@ -54,6 +51,7 @@ export function createCellShape({ amp = 0.08, speed = 0.6, seed = 0, wobble = 0.
     uDentC: { value: Array.from({ length: MAX_DENTS }, () => new THREE.Vector4(0, 0, 0, 0.2)) },
     uDentN: { value: Array.from({ length: MAX_DENTS }, () => new THREE.Vector4(0, 0, 1, 0)) },
     uDentP: { value: new Array(MAX_DENTS).fill(0) },
+    uDentB: { value: Array.from({ length: MAX_DENTS }, () => new THREE.Vector4(0, 0, 0, 0)) },
   };
 }
 
@@ -63,12 +61,115 @@ export function syncShape(shape, body) {
   shape.uBodyInv.value.copy(body.matrixWorld).invert();
 }
 
-export function setDent(shape, i, { center, normal, radius = 0.2, depth = 0, pinch = 0 }) {
-  if (center) shape.uDentC.value[i].set(center.x, center.y, center.z, radius);
-  else shape.uDentC.value[i].w = radius;
-  if (normal) shape.uDentN.value[i].set(normal.x, normal.y, normal.z, depth);
-  else shape.uDentN.value[i].w = depth;
+// ---------------------------------------------------------------------------------------------
+// Endocytic pockets. A pocket is a cup carved out of the cell: the sphere of the particle it
+// swallows, DENT_GAP larger, swept outward along the pocket's normal. Its floor hugs the particle at
+// that gap, its walls rise to the surface and turn into it over a soft rim, and the cell's double
+// film lines it like the rest of the envelope. Pinching narrows the neck above the sphere until it
+// shuts: the particle is left in a sealed bubble lined by its own double film, as a vesicle's.
+// setDent(shape, i, {...}), all in reference body space:
+//   center    the point on the reference surface the pocket sinks from; radius: its footprint (µm),
+//             whose DENT_RIM is how softly the walls turn into the surface
+//   normal    outward unit normal there
+//   particle  { center, radius }: the particle in the cup (the cup's sphere is it plus DENT_GAP)
+//   cup       optional: the cup sphere's radius instead (the sealed bubble shrinks away with it)
+//   pinch     0..1: how far the neck has closed
+//   depth     only without a particle: a plain round cup sunk this deep (µm). With a particle the
+//             depth is worked out from it (how far the cup's floor is below the surface). A depth
+//             of 0 switches the dent off.
+// The pocket only ever carves the cell away, never adds to it, and its field is a true distance
+// except where it is blended (where it is shallower), so it never needs smaller march steps.
+// ---------------------------------------------------------------------------------------------
+export const DENT_GAP = 0.015; // the vesicle born from the bubble has its outer film at this gap too
+export const DENT_RIM = 0.35;
+export const DENT_SHUT = 0.16; // how far past closed the neck goes at pinch 1: clear of both films and the rim
+
+export function setDent(shape, i, { center, normal, radius = 0.2, depth = 0, pinch = 0, particle = null, cup }) {
+  const C = shape.uDentC.value[i], N = shape.uDentN.value[i], B = shape.uDentB.value[i];
+  if (center) C.set(center.x, center.y, center.z, radius);
+  else C.w = radius;
+  if (normal) N.set(normal.x, normal.y, normal.z, N.w);
   shape.uDentP.value[i] = pinch;
+  if (particle) {
+    const p = particle.center;
+    B.set(p.x, p.y, p.z, cup ?? particle.radius + DENT_GAP);
+    // the cup's floor below the surface; on as soon as its rim can reach the surface
+    const floor = B.w - ((p.x - C.x) * N.x + (p.y - C.y) * N.y + (p.z - C.z) * N.z);
+    N.w = floor > -DENT_RIM * C.w ? Math.max(floor, 1e-4) : 0;
+  } else {
+    const rc = 0.6 * C.w;
+    B.set(C.x - N.x * (depth - rc), C.y - N.y * (depth - rc), C.z - N.z * (depth - rc), rc);
+    N.w = depth;
+  }
+}
+
+const dentSmax = (a, b, k) => {
+  const h = Math.max(k - Math.abs(a - b), 0) / k;
+  return Math.max(a, b) + h * h * k * 0.25;
+};
+const dentSmin = (a, b, k) => {
+  const h = k > 0 ? Math.max(k - Math.abs(a - b), 0) / k : 0;
+  return Math.min(a, b) - h * h * k * 0.25;
+};
+
+// Distance to pocket k's water (negative inside it) at body point (x, y, z): the cup's sphere and
+// the neck rising from it out past the surface, the neck narrowing as it pinches.
+function dentCarve(shape, k, x, y, z) {
+  const C = shape.uDentC.value[k], N = shape.uDentN.value[k], B = shape.uDentB.value[k];
+  const rc = B.w, pinch = shape.uDentP.value[k];
+  const dx = x - B.x, dy = y - B.y, dz = z - B.z;
+  const sphere = Math.hypot(dx, dy, dz) - rc;
+  const top = Math.max(-((B.x - C.x) * N.x + (B.y - C.y) * N.y + (B.z - C.z) * N.z), 0) + DENT_RIM * C.w + 0.1;
+  const h = Math.min(Math.max(dx * N.x + dy * N.y + dz * N.z, 0), top);
+  const neck = Math.hypot(dx - N.x * h, dy - N.y * h, dz - N.z * h) - (rc - pinch * (rc + DENT_SHUT));
+  return dentSmin(sphere, neck, 0.5 * Math.max(rc, 0) * pinch);
+}
+
+// JS twin of CellPass dents(): how far the pockets raise the cell's field at reference point p
+// (>= 0; the cell's surface is where capsuleSd(p) + dentOffset(shape, p) = 0). Keep identical.
+export function dentOffset(shape, p) {
+  const base = capsuleSd(p);
+  let o = 0;
+  for (let k = 0; k < MAX_DENTS; k++) {
+    if (shape.uDentN.value[k].w <= 0) continue;
+    o += dentSmax(base, -dentCarve(shape, k, p.x, p.y, p.z), DENT_RIM * shape.uDentC.value[k].w) - base;
+  }
+  return o;
+}
+
+// Where the pockets carry a point of the envelope at reference p (a membrane complex, a bead bound
+// for one): down the pocket's axis to where the surface it sat on (its level of the field) now
+// is, so what sat over the mouth lines the cup and comes back up as the neck closes. Added to out.
+export function dentShift(shape, p, out) {
+  const L = capsuleSd(p);
+  for (let k = 0; k < MAX_DENTS; k++) {
+    const N = shape.uDentN.value[k];
+    if (N.w <= 0 || dentLevel(shape, k, p, 0) <= L) continue;
+    // step in until the field is back at L, then halve the last step
+    let a = 0, b = 0;
+    for (let s = 0.02; s <= N.w + 0.3; s += 0.02) {
+      b = s;
+      if (dentLevel(shape, k, p, s) <= L) break;
+      a = s;
+    }
+    for (let it = 0; it < 8; it++) {
+      const m = 0.5 * (a + b);
+      if (dentLevel(shape, k, p, m) > L) a = m;
+      else b = m;
+    }
+    out.x -= N.x * b;
+    out.y -= N.y * b;
+    out.z -= N.z * b;
+  }
+  return out;
+}
+
+// The cell's field with pocket k, s µm in from p along the pocket's axis.
+function dentLevel(shape, k, p, s) {
+  const N = shape.uDentN.value[k];
+  const x = p.x - N.x * s, y = p.y - N.y * s, z = p.z - N.z * s;
+  const base = Math.hypot(x, y, Math.max(Math.abs(z) - 0.5, 0)) - 0.5;
+  return dentSmax(base, -dentCarve(shape, k, x, y, z), DENT_RIM * shape.uDentC.value[k].w);
 }
 
 // Signed distance to the reference capsule (negative inside).

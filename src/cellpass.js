@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { Pass, FullScreenQuad } from 'three/addons/postprocessing/Pass.js';
-import { clock, MAX_DENTS } from './materials.js';
+import { clock, MAX_DENTS, DENT_RIM, DENT_SHUT } from './materials.js';
 
 // The cell renderer. Every cell is drawn as one continuous volume of living matter, raymarched in
 // a single pass after the rest of the scene: its membranes are thin films in that volume, and its
@@ -55,6 +55,8 @@ const fragmentShader = /* glsl */ `
   #define NGP ${GLYCO_PATH}
   #define NF 6              // film slots: cell outer/wall, cell inner, and two per vesicle
   #define WALL_H 0.028      // half the thickness of a coccus's wall (µm)
+  #define DENT_RIM ${DENT_RIM.toFixed(4)}
+  #define DENT_SHUT ${DENT_SHUT.toFixed(4)}
   #ifndef CELL_DEBUG
   #define CELL_DEBUG 0
   #endif
@@ -83,9 +85,10 @@ const fragmentShader = /* glsl */ `
 
   // Hero cell detail (cell 0 when uHero == 1), all in reference body space.
   uniform int uHero;
-  uniform vec4 uDentC[MAXD];
-  uniform vec4 uDentN[MAXD];
-  uniform float uDentP[MAXD];
+  uniform vec4 uDentC[MAXD];       // pocket: point on the surface, footprint
+  uniform vec4 uDentN[MAXD];       // outward normal, floor depth (0 = off)
+  uniform float uDentP[MAXD];      // pinch
+  uniform vec4 uDentB[MAXD];       // the cup's sphere: centre, radius (materials.js setDent)
   uniform vec4 uNucleoid;          // centre, size scale
   uniform vec4 uPlasmid;           // centre, ring radius
   uniform vec4 uGranule[MAXG];     // centre, radius
@@ -260,52 +263,72 @@ const fragmentShader = /* glsl */ `
     s.sigma += sigma;
   }
 
-  // Endocytic pockets on the hero: the surface sinks inward along -normal; pinching seals the
-  // opening, leaving what is inside in its own bubble.
-  // slope: raised to a bound on how steep the pocket makes the field here, so the march never
-  // strides over a pocket wall.
+  // Endocytic pockets on the hero (materials.js setDent; its dentOffset() is this same field in JS:
+  // keep the two identical). A pocket is a cup carved out of the cell: the swallowed particle's
+  // sphere a little larger (uDentB) swept outward along the normal, so its floor hugs the particle,
+  // its walls rise to the surface and turn into it over a soft rim (uDentC.w * DENT_RIM), and the
+  // double film lines it like the rest of the envelope. Pinching (uDentP) narrows the neck above the
+  // sphere until it shuts, leaving the particle in a sealed bubble with its own double film.
+  float dentSmax(float a, float b, float k) {
+    float h = max(k - abs(a - b), 0.0) / k;
+    return max(a, b) + h * h * k * 0.25;
+  }
+  // Distance to pocket k's water (negative inside it): the cup's sphere, and the neck rising from it
+  // out past the surface, narrowing as it pinches (to DENT_SHUT past closed).
+  float dentCarve(int k, vec3 p) {
+    vec3 c = uDentC[k].xyz, dn = uDentN[k].xyz;
+    vec4 b = uDentB[k];
+    float pinch = uDentP[k];
+    vec3 d = p - b.xyz;
+    float sphere = length(d) - b.w;
+    float top = max(-dot(b.xyz - c, dn), 0.0) + DENT_RIM * uDentC[k].w + 0.1;
+    float h = clamp(dot(d, dn), 0.0, top);
+    float neck = length(d - dn * h) - (b.w - pinch * (b.w + DENT_SHUT));
+    float kn = 0.5 * max(b.w, 0.0) * pinch;
+    float hn = kn > 0.0 ? max(kn - abs(sphere - neck), 0.0) / kn : 0.0;
+    return min(sphere, neck) - hn * hn * kn * 0.25;
+  }
+  // How far the pockets raise the field at p (>= 0, added to the capsule's distance). The carved
+  // field's slope is never above 1, so the march needs no extra care; slope is nudged just above 1
+  // where a pocket is, so the films there are measured by the real gradient (the rim's blend runs
+  // a little shallower than a true distance).
   float dents(vec3 p, inout float slope) {
     float o = 0.0;
     for (int k = 0; k < MAXD; k++) {
-      float depth = uDentN[k].w;
-      if (depth <= 0.0) continue;
-      vec3 dn = uDentN[k].xyz;
-      float r = uDentC[k].w;
-      vec3 d = p - uDentC[k].xyz;
-      if (length(d) < 2.6 * r + depth) slope = max(slope, 1.0 + depth * (0.9 / r + 1.5 / (1.6 * r + depth)) + uDentP[k] * depth * 2.1 / r);
-      float along = dot(d, dn);
-      float l = length(d - dn * along);
-      float nearSide = smoothstep(-2.2 * r - depth, -0.6 * r, along);
-      float fall = exp(-(l * l) / (r * r));
-      float pocket = depth * fall * nearSide;
-      float lid = uDentP[k] * pocket * exp(-pow((along + 0.35 * r) / (0.45 * r), 2.0));
-      o += pocket - lid * 1.1;
+      if (uDentN[k].w <= 0.0) continue;
+      float base = capsuleSdH(p, 0.5, 0.5);
+      float f = dentSmax(base, -dentCarve(k, p), DENT_RIM * uDentC[k].w) - base;
+      if (f > 0.0) { o += f; slope = max(slope, 1.001); }
     }
     return o;
   }
-  // How much of a pocket's wall (x) and of its pinching neck (y) the membrane at p is.
+  // How much of a pocket's wall (x: how far the membrane here has sunk into it) and of its closing
+  // neck (y) the membrane at p is.
   vec2 dentLook(vec3 p) {
     vec2 w = vec2(0.0);
     for (int k = 0; k < MAXD; k++) {
-      float depth = uDentN[k].w;
-      if (depth <= 0.0) continue;
+      if (uDentN[k].w <= 0.0) continue;
+      float base = capsuleSdH(p, 0.5, 0.5);
+      float f = dentSmax(base, -dentCarve(k, p), DENT_RIM * uDentC[k].w) - base;
+      w.x += smoothstep(0.0, 0.08, f);
+      // the neck: round the axis, between the cup's sphere and the surface, while it closes
       vec3 dn = uDentN[k].xyz;
-      float r = uDentC[k].w;
-      vec3 d = p - uDentC[k].xyz;
-      float along = dot(d, dn);
-      float l = length(d - dn * along);
-      float fall = exp(-(l * l) / (r * r));
-      w.x += fall * smoothstep(-2.2 * r - depth, -0.6 * r, along) * min(depth / r, 1.0);
-      w.y += uDentP[k] * exp(-pow((along + 0.3 * r) / (0.5 * r), 2.0)) * exp(-(l * l) / (1.44 * r * r));
+      vec4 b = uDentB[k];
+      vec3 d = p - b.xyz;
+      float h = dot(d, dn);
+      float l = length(d - dn * h);
+      float rc = max(b.w, 0.02);
+      float surf = -dot(b.xyz - uDentC[k].xyz, dn);   // the surface's height over the sphere's centre
+      float mid = 0.5 * (rc + surf), hw = max(0.5 * (surf - rc), 0.03) + 0.04;
+      float pin = uDentP[k];
+      float z = (h - mid) / hw, lr = l / (rc + 0.1);
+      w.y += 4.0 * pin * (1.0 - pin) * exp(-z * z - lr * lr);
     }
     return min(w, vec2(1.0));
   }
   bool nearDent(vec3 p) {
-    for (int k = 0; k < MAXD; k++) {
-      float depth = uDentN[k].w;
-      if (depth > 0.0 && length(p - uDentC[k].xyz) < 2.6 * uDentC[k].w + depth) return true;
-    }
-    return false;
+    float s = 1.0;
+    return dents(p, s) > 0.0;
   }
 
   // Binary fission (pinch 0..1): a furrow at z = 0 deepens until the rod is two. The two daughter
@@ -1226,6 +1249,7 @@ export class CellPass extends Pass {
       uDentC: { value: v4(MAX_DENTS) },
       uDentN: { value: v4(MAX_DENTS) },
       uDentP: { value: new Array(MAX_DENTS).fill(0) },
+      uDentB: { value: v4(MAX_DENTS) },
       uNucleoid: { value: new THREE.Vector4(0, 0, 0, 1) },
       uPlasmid: { value: new THREE.Vector4(0, 0, 0, 0.08) },
       uGranule: { value: v4(MAX_GRANULES) },
@@ -1421,6 +1445,7 @@ export class CellPass extends Pass {
           u.uDentC.value[k].copy(sh.uDentC.value[k]);
           u.uDentN.value[k].copy(sh.uDentN.value[k]);
           u.uDentP.value[k] = sh.uDentP.value[k];
+          u.uDentB.value[k].copy(sh.uDentB.value[k]);
         }
         const v = cell.volume;
         if (v) this.heroUniforms(v);
