@@ -4,13 +4,15 @@ import { sceneColor } from './lens.js';
 
 // The far crowd: the resident bacteria of a leaf (10^6-10^7 per cm²), too far away for CellPass,
 // drawn as camera-facing impostors. Each is a tiny rod (or now and then a coccus) seen through
-// water: a clear body a shade darker than the water, a luminous film round its edge in faint
+// water: a clear body a shade lighter than the water, densest in its middle and fading to nothing
+// at its edge (never a rim, which would read as an outline), its sun side catching faint
 // thin-film colours, a hint of gold where its nucleoid is. They swim lazy runs to and fro and turn
-// slowly. Everything is fogged like the scene, and an impostor only shows beyond `near` µm from
-// the camera (closer than that, real cells take over), so the crowd never crowds the subject.
+// slowly. With distance they thin away (aerial falloff: `aerial`, 1/µm), so a crowd seen from
+// above sinks into the depth instead of greying toward the fog colour. An impostor only shows
+// beyond `near` µm from the camera (closer than that, real cells take over).
 //
 // new Crowd({ clusters: [{ center, radius, count, flat? }], seed }) ; scene.add(crowd.mesh)
-// crowd.opacity (0..1), crowd.near = [start, end] µm, crowd.resize(heightPx, fovDeg), dispose().
+// crowd.opacity (0..1), crowd.aerial (1/µm), crowd.resize(heightPx, fovDeg), dispose().
 
 const vertexShader = /* glsl */ `
   #include <common>
@@ -18,7 +20,7 @@ const vertexShader = /* glsl */ `
   attribute vec3 aPos;
   attribute vec3 aAxis;
   attribute vec4 aSeed;     // size, film phase, swim phase, coccus (1) or rod (0)
-  uniform float uTime, uPixelAngle;
+  uniform float uTime, uPixelAngle, uAerial;
   uniform vec2 uNear;
   uniform vec3 uSunDir;
   varying vec2 vSun;        // the sun's direction across the impostor
@@ -54,10 +56,11 @@ const vertexShader = /* glsl */ `
     vPx = px;
     vFilm = aSeed.y;
     vCoccus = coccus;
-    vAlpha = smoothstep(uNear.x, uNear.y, dist);
+    float fa = dist * uAerial;
+    vAlpha = smoothstep(uNear.x, uNear.y, dist) * exp(-fa * fa);
     vec4 mvPosition = mv;
-    if (vAlpha < 0.002) mvPosition = vec4(0.0, 0.0, 2.0, 1.0); // behind the camera: not drawn
     gl_Position = projectionMatrix * mvPosition;
+    if (vAlpha < 0.002) gl_Position = vec4(2.0, 2.0, 2.0, 1.0); // not drawn
     #include <fog_vertex>
   }
 `;
@@ -81,16 +84,17 @@ const fragmentShader = /* glsl */ `
     float inside = smoothstep(edge, -edge, d);
     float r = max(length(vLocal), 1e-4);
     float lit = max(dot(vLocal / r, vSun), 0.0) * smoothstep(-0.6 * vShape.y, -0.05 * vShape.y, d) * inside;
-    vec3 film = 0.65 + 0.35 * cos(6.2831853 * (vFilm + d * 2.0 + vec3(0.0, 0.33, 0.67)));
+    // faint film colour, varying across the body only slowly (a ring of it would read as a contour)
+    vec3 film = 0.85 + 0.15 * cos(6.2831853 * (vFilm + vLocal.x * 0.15 + vec3(0.0, 0.33, 0.67)));
     vec2 q = vLocal / max(vec2(vShape.x + 0.7 * vShape.y, 0.55 * vShape.y), vec2(1e-4));
     float nuc = exp(-dot(q, q));
-    // pale like the near cells: a clear film body catching the light, a warm nucleoid inside
+    // pale like the near cells: a clear film body catching the light, a warm nucleoid inside.
+    // Densest in the middle, fading to nothing at the edge.
     float core = exp(-dot(q, q) * 1.6);
-    vec3 col = mix(uBody, uRim * film, 0.35 + 0.4 * lit);
-    col = mix(col, uGold, 0.75 * core);
-    float a = inside * (0.22 + 0.35 * core) + lit * big * 0.12;
+    vec3 col = mix(uBody, uRim * film, 0.3 + 0.4 * lit);
+    col = mix(col, uGold, 0.7 * core);
+    float a = inside * (0.1 + 0.4 * core) * smoothstep(0.0, -0.4 * vShape.y, d) + lit * big * 0.12 * inside;
     gl_FragColor = vec4(col, a * uOpacity * vAlpha);
-    #include <fog_fragment>
   }
 `;
 
@@ -133,11 +137,12 @@ export class Crowd {
       THREE.UniformsLib.fog,
       {
         uPixelAngle: { value: 0.0014 },
-        uBody: { value: sceneColor(0xe4ece8) },
+        uBody: { value: sceneColor(0xf2f6f4) },
         uRim: { value: sceneColor(0xf6f8f4, 1.08) },
         uGold: { value: sceneColor(0xe0a85a) },
         uNear: { value: new THREE.Vector2(...near) },
         uOpacity: { value: 1 },
+        uAerial: { value: 0 },
         uSunDir: { value: new THREE.Vector3(0.35, 1, 0.45).normalize() },
       },
     ]);
@@ -164,6 +169,13 @@ export class Crowd {
   set opacity(v) {
     this.uniforms.uOpacity.value = v;
     this.mesh.visible = v > 0.002;
+  }
+
+  get aerial() {
+    return this.uniforms.uAerial.value;
+  }
+  set aerial(v) {
+    this.uniforms.uAerial.value = v;
   }
 
   resize(height, fov = 42) {

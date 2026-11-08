@@ -8,7 +8,9 @@ import { Bacterium, Coccus } from './bacterium.js';
 //
 // For the opening: `held` stops update() from moving anyone (the intro drives the cells it needs),
 // spawnAt() and despawn() add and remove extra rods, hide() takes the ordinary neighbours out of
-// the water for a while, and scatter() puts them back somewhere out of view.
+// the water for a while, and scatter() puts them back somewhere out of view. adopt() takes over a
+// thing the opening leaves in the world (the shed wall): update() keeps it ticking and removes it
+// once the hero has left it far behind.
 
 const TINTS = [0xeaf4ff, 0xf3ecff, 0xeefbe8, 0xfff4ea];
 
@@ -53,6 +55,7 @@ export class Neighbours {
     this.rods = [];
     this.cocci = [];
     this.extra = []; // rods added with spawnAt()
+    this.adopted = []; // things left in the world by the opening (adopt())
     this.held = false;
     for (let i = 0; i < rods; i++) {
       const b = new Bacterium({ seed: 100 + i, tint: TINTS[i % TINTS.length], scale: 0.85 + (i % 3) * 0.15 });
@@ -103,6 +106,14 @@ export class Neighbours {
     for (const f of b.flagella) f.filament.geometry.dispose();
   }
 
+  // Keeps a CellPass descriptor the opening leaves behind (the husk: { group, update(dt) }) ticking
+  // until the hero is more than removeBeyond µm from it; then it is taken out of the scene and
+  // CellPass for good.
+  adopt(cell, { removeBeyond = 60 } = {}) {
+    if (!cell || this.adopted.some((a) => a.cell === cell)) return;
+    this.adopted.push({ cell, removeBeyond });
+  }
+
   // Takes the ordinary neighbours out of the water (hidden, not drawn) or brings them back.
   hide(hidden = true) {
     for (const b of this.rods) b.group.visible = !hidden;
@@ -136,6 +147,15 @@ export class Neighbours {
 
   update(dt) {
     if (this.held) return;
+    for (let i = this.adopted.length - 1; i >= 0; i--) {
+      const { cell, removeBeyond } = this.adopted[i];
+      cell.update?.(dt);
+      if (cell.group.position.distanceTo(this.hero.group.position) > removeBeyond) {
+        this.scene.remove(cell.group);
+        this.cellPass.remove(cell);
+        this.adopted.splice(i, 1);
+      }
+    }
     for (const b of this.rods) {
       if (!b.group.visible) continue;
       const drive = runTumble(b, dt);

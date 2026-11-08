@@ -84,6 +84,7 @@ const veilFragment = /* glsl */ `
   uniform sampler2D tDiffuse, tHold;
   uniform float uGrad, uPoint, uReveal, uFlash, uHold, uDim, uAspect, uTime;
   uniform vec2 uPointPos;
+  uniform vec3 uFarTone;
   varying vec2 vUv;
   void main() {
     vec3 scene = texture2D(tDiffuse, vUv).rgb;
@@ -93,15 +94,18 @@ const veilFragment = /* glsl */ `
     vec3 grad = mix(vec3(0.16, 0.16, 0.27), vec3(0.47, 0.44, 0.6), smoothstep(0.0, 1.0, vUv.y));
     grad = mix(grad, vec3(0.62, 0.54, 0.6), 0.35 * smoothstep(0.3, 1.2, 1.0 - length(vUv - vec2(0.75, 1.05))));
     vec3 pre = grad * uGrad;
-    // The point of light: a tight core and a soft halo with a faint four-point glint.
-    float star = exp(-r * r / 0.000012) + 0.28 * exp(-r * r / 0.0009) + 0.05 * exp(-r * r / 0.02);
-    star += 0.05 * exp(-abs(d.x) * 300.0 - abs(d.y) * 12.0) + 0.05 * exp(-abs(d.y) * 300.0 - abs(d.x) * 12.0);
-    pre += vec3(1.0, 0.97, 0.93) * star * uPoint;
-    // The iris: the image opens out round the point, the dawn lightening as it does.
-    float R = uReveal * 1.6;
-    float m = 1.0 - smoothstep(R * 0.35, R, r);
-    m = max(m, smoothstep(0.8, 1.0, uReveal));
-    pre = mix(pre, pre * 1.6 + vec3(0.1, 0.1, 0.12), smoothstep(0.0, 0.6, uReveal));
+    // The point of light: a soft round core and halo, its fringe faintly split into colour, as a
+    // bright point seen through wet eyes.
+    float core = exp(-r * r / 0.000014);
+    vec3 halo = vec3(exp(-r * r / 0.0011), exp(-r * r / 0.0009), exp(-r * r / 0.00075)) * 0.26;
+    halo += vec3(0.05, 0.045, 0.06) * exp(-r * r / 0.02);
+    pre += (vec3(1.0, 0.98, 0.95) * core + halo * vec3(1.0, 0.95, 1.05)) * uPoint;
+    // The image fades up round the point. As it does, the gradient settles toward the backdrop's own
+    // tone, so the light grows outward and nothing at the edges darkens.
+    float R = max(uReveal * 1.7, 1e-4);
+    float m = 1.0 - smoothstep(R * 0.2, R, r);
+    m = max(m, smoothstep(0.75, 1.0, uReveal));
+    pre = mix(pre, uFarTone + halo * uPoint, smoothstep(0.0, 0.55, uReveal));
     vec3 col = mix(pre, scene, m);
     col = mix(col, texture2D(tHold, vUv).rgb, uHold);
     // The blink: the light dips toward deep lilac.
@@ -126,6 +130,8 @@ class VeilPass extends Pass {
       uAspect: { value: 16 / 9 },
       uTime: { value: 0 },
       uPointPos: { value: new THREE.Vector2(0.5, 0.5) },
+      // The far layer's mean display tone in the hub (measured), what the gradient settles to.
+      uFarTone: { value: new THREE.Vector3(0.33, 0.37, 0.4) },
     };
     this.material = new THREE.ShaderMaterial({
       uniforms: this.uniforms,
@@ -135,11 +141,6 @@ class VeilPass extends Pass {
       depthWrite: false,
     });
     this.quad = new FullScreenQuad(this.material);
-    this.copy = new FullScreenQuad(new THREE.ShaderMaterial({
-      uniforms: { tDiffuse: { value: null } },
-      vertexShader: /* glsl */ `varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
-      fragmentShader: /* glsl */ `uniform sampler2D tDiffuse; varying vec2 vUv; void main() { gl_FragColor = texture2D(tDiffuse, vUv); }`,
-    }));
     this.hold = null;
     this.wantCapture = false;
   }
@@ -170,8 +171,6 @@ class VeilPass extends Pass {
   dispose() {
     this.material.dispose();
     this.quad.dispose();
-    this.copy.material.dispose();
-    this.copy.dispose();
     this.hold?.dispose();
   }
 }
@@ -185,6 +184,9 @@ class CutToGame {
     this.frameHeight = 4.8;
     this.canHandOver = true;
     this.done = false;
+    // It brings neither sound nor the interface: the director plays and shows both.
+    this.ownsSound = false;
+    this.ownsHud = false;
   }
   start() {
     this.skip();
@@ -257,6 +259,16 @@ class IntroUI {
     this.skipArc = this.skip.querySelector('.arc');
     this.capUntil = 0;
     this.label = null;
+    this.was = {}; // the last value written to each style, so a frame writes only what changed
+  }
+
+  // Writes a style (or attribute, for `attr`) only when its value changes.
+  put(node, key, value, attr = false) {
+    const k = `${node === this.skipArc ? 'a' : node === this.bar ? 'b' : node === this.barLine ? 'l' : node === this.picto ? 'p' : 's'}.${key}`;
+    if (this.was[k] === value) return;
+    this.was[k] = value;
+    if (attr) node.setAttribute(key, value);
+    else node.style[key] = value;
   }
 
   showPre(on) {
@@ -277,29 +289,32 @@ class IntroUI {
   }
 
   setBar(visible, label, px) {
-    this.bar.style.opacity = visible ? '1' : '0';
+    this.put(this.bar, 'opacity', visible ? '1' : '0');
     if (!visible) return;
     if (label !== this.label) {
       this.label = label;
       this.barLabel.textContent = label;
     }
-    this.barLine.style.width = `${Math.round(clamp(px, 4, innerWidth * 0.6))}px`;
+    this.put(this.barLine, 'width', `${Math.round(clamp(px, 4, innerWidth * 0.6))}px`);
   }
 
   setPicto(on, x, y) {
-    this.picto.style.opacity = on ? '0.7' : '0';
-    if (x != null) {
-      this.picto.style.left = `${Math.round(x)}px`;
-      this.picto.style.top = `${Math.round(y - 20)}px`;
+    this.put(this.picto, 'opacity', on ? '0.7' : '0');
+    if (x != null && on) {
+      this.put(this.picto, 'left', `${Math.round(x)}px`);
+      this.put(this.picto, 'top', `${Math.round(y - 20)}px`);
     }
   }
 
   setSkip(p, x, y, r) {
-    this.skip.style.opacity = p > 0.02 ? '1' : '0';
-    this.skip.style.left = `${Math.round(x - r)}px`;
-    this.skip.style.top = `${Math.round(y - r)}px`;
-    this.skip.style.width = this.skip.style.height = `${Math.round(2 * r)}px`;
-    this.skipArc.setAttribute('stroke-dashoffset', `${(289 * (1 - clamp(p, 0, 1))).toFixed(1)}`);
+    const on = p > 0.02;
+    this.put(this.skip, 'opacity', on ? '1' : '0');
+    if (!on && this.was['s.opacity'] === '0' && this.was['a.stroke-dashoffset'] === '289.0') return;
+    this.put(this.skip, 'left', `${Math.round(x - r)}px`);
+    this.put(this.skip, 'top', `${Math.round(y - r)}px`);
+    this.put(this.skip, 'width', `${Math.round(2 * r)}px`);
+    this.put(this.skip, 'height', `${Math.round(2 * r)}px`);
+    this.put(this.skipArc, 'stroke-dashoffset', `${(289 * (1 - clamp(p, 0, 1))).toFixed(1)}`, true);
   }
 
   dispose() {
@@ -338,6 +353,8 @@ export class Intro {
     this.td = 0; // the dive clock
     this.tm = 0; // seconds since MicroIntro.start()
     this.diveRate = 1;
+    this.wallLast = null; // performance.now() of the last update (the cue clock runs on the wall clock)
+    this.pad = null; // the gamepad, polled once per step
 
     // Input.
     this.cursor = new THREE.Vector2(0, 0);
@@ -358,6 +375,8 @@ export class Intro {
     const size = renderer.getDrawingBufferSize(new THREE.Vector2());
     this.garden.setSize(size.x, size.y);
     this.lensSaved = this.saveLens();
+    this.drawing = true;
+    this.gated = null;
     this.enterGarden();
 
     // The hub's state.
@@ -383,19 +402,23 @@ export class Intro {
       /* storage blocked */
     }
     this.captions = caps;
-    this.audio = new IntroAudio({ onCaption: (text, s) => this.captions && this.ui.caption(text, this.clockNow() + s) });
+    this.audio = new IntroAudio();
 
     const Micro = MicroIntro ?? MicroIntroFound;
     const deps = { renderer, scene, camera, controls, cellPass, water, hero, neighbours, hud, look, reducedMotion: this.reducedMotion };
     this.micro = Micro ? new Micro(deps) : new CutToGame(deps);
     this.micro.reducedMotion = this.reducedMotion;
-    // The real MicroIntro brings the micro half's own sound (attachAudio) and shows the interface
-    // itself during its glide; a stand-in leaves both to the director.
-    this.microOwnsSound = typeof this.micro.attachAudio === 'function';
-    this.microOwnsHud = this.microOwnsSound;
+    // Who plays the micro half's sound, and who brings the interface in at the hand-over: a
+    // MicroIntro says so with `ownsSound` / `ownsHud`. Without the flags, one that can take an
+    // AudioContext (attachAudio) plays its own sound, and the real MicroIntro (anything but the
+    // director's own stand-in) shows the HUD itself in its glide and finish().
+    const m = this.micro;
+    this.microOwnsSound = m.ownsSound ?? typeof m.attachAudio === 'function';
+    this.microOwnsHud = m.ownsHud ?? !(m instanceof CutToGame);
 
     hud?.show?.(false, 0);
     if (controls) controls.enabled = false;
+    if (player && 'enabled' in player) player.enabled = false;
 
     this.cues = this.buildCues();
     this.bindInput();
@@ -411,11 +434,17 @@ export class Intro {
     return performance.now() / 1000;
   }
 
+  // A caption for a sound (story §4.2: every sound that is not speech has one), whoever plays it,
+  // and whether or not sound is on.
+  caption(text, seconds = 2.6) {
+    if (this.captions) this.ui.caption(text, this.clockNow() + seconds);
+  }
+
   // ---------------------------------------------------------------------------- stage swap
   saveLens() {
     const u = this.look?.lens?.uniforms;
     if (!u) return null;
-    return { lift: u.uLift.value.clone(), amount: u.uLiftAmount.value, warmth: u.uWarmth.value };
+    return { lift: u.uLift.value.clone(), amount: u.uLiftAmount.value, warmth: u.uWarmth.value, contrast: u.uContrast.value, saturation: u.uSaturation.value, clarity: u.uClarity.value };
   }
 
   enterGarden() {
@@ -426,12 +455,17 @@ export class Intro {
     if (front) front.enabled = false;
     this.garden.pass.enabled = true;
     this.inMicro = false;
-    // The dawn grade (story §6.2 DAWN.lens): shadows lifted toward a bluer lilac, no warmth yet.
+    // The Garden's grade: clear and luminous (the user's request 9: sharp, never hazy). The deepest
+    // shadows only just lean toward the dawn's lilac; a firmer S-curve and a little more purity give
+    // the leaf a real range from deep creases to silvered ridges, the beads true highlights.
     const u = this.look.lens?.uniforms;
     if (u) {
       u.uLift.value.set(0.5, 0.47, 0.66);
-      u.uLiftAmount.value = 0.08;
-      u.uWarmth.value = 0;
+      u.uLiftAmount.value = 0.015;
+      u.uWarmth.value = 0.02;
+      u.uContrast.value = 0.2;
+      u.uSaturation.value = 0.2;
+      u.uClarity.value = 0.8;
     }
   }
 
@@ -448,6 +482,9 @@ export class Intro {
       u.uLift.value.copy(this.lensSaved.lift);
       u.uLiftAmount.value = this.lensSaved.amount;
       u.uWarmth.value = this.lensSaved.warmth;
+      u.uContrast.value = this.lensSaved.contrast;
+      u.uSaturation.value = this.lensSaved.saturation;
+      u.uClarity.value = this.lensSaved.clarity;
     }
   }
 
@@ -468,13 +505,24 @@ export class Intro {
           this.lookedAround = true;
         }
       },
+      // Only activation-triggering input may start sound (MDN, 'User activation'): a mouse's
+      // pointerdown, a touch or pen's pointerup, a key other than Escape. Any later one retries a
+      // context the browser still holds suspended.
       down: (e) => {
-        if (this.state === 'preroll') return this.gesture();
+        if (this.state === 'preroll') {
+          if (e.pointerType === 'mouse') this.gesture();
+          return;
+        }
+        if (e.pointerType === 'mouse') this.wake();
         ndc(e);
         if (this.state === 'garden' && e.button === 0 && this.t >= T.control) this.requestDive('click');
       },
-      up: () => {
+      up: (e) => {
         this.dragging = false;
+        if (e.pointerType !== 'mouse') {
+          if (this.state === 'preroll') this.gesture();
+          else this.wake();
+        }
       },
       wheel: (e) => {
         if (this.state === 'preroll' || this.state === 'done') return;
@@ -485,10 +533,12 @@ export class Intro {
       },
       keydown: (e) => {
         if (this.state === 'preroll') {
+          if (e.code === 'Escape') return; // not a user activation: it could not start the sound
           if (e.code === 'KeyC') this.setCaptions(true);
           return this.gesture();
         }
         if (this.state === 'done') return;
+        if (e.code !== 'Escape') this.wake();
         this.keys.add(e.code);
         if (e.code === 'KeyC' && !e.repeat) this.setCaptions(!this.captions);
         if (e.code === 'KeyW' && this.state === 'garden' && this.t >= T.control) this.requestDive('key');
@@ -525,8 +575,14 @@ export class Intro {
     if (!on) this.ui.cap.style.opacity = '0';
   }
 
+  // A later gesture: if the browser still holds the sound suspended, try again inside it.
+  wake() {
+    if (this.audio.ctx?.state === 'suspended') this.audio.ctx.resume?.();
+  }
+
   // The pre-roll's click or key: resumes the audio inside the gesture and starts 0:00.
   gesture() {
+    if (this.state !== 'preroll') return;
     this.audio.resume();
     this.ui.pre.style.opacity = '0';
     setTimeout(() => this.ui.showPre(false), 500);
@@ -541,58 +597,63 @@ export class Intro {
 
   // Gamepad: left stick steers the glass, the triggers raise and lower it, A dives, B (held) skips.
   pollGamepad() {
-    const pads = navigator.getGamepads?.() ?? [];
-    const p = [...pads].find((x) => x && x.connected);
+    const pads = navigator.getGamepads?.();
+    let p = null;
+    if (pads) for (let i = 0; i < pads.length; i++) if (pads[i]?.connected) { p = pads[i]; break; }
     if (!p) return null;
     const b = (i) => p.buttons[i]?.value ?? 0;
     const dead = (v) => (Math.abs(v) < 0.15 ? 0 : v);
-    return { x: dead(p.axes[0] ?? 0), y: dead(p.axes[1] ?? 0), lt: b(6), rt: b(7), a: b(0) > 0.5, back: b(1) > 0.5 };
+    const o = (this.padState ??= {});
+    o.x = dead(p.axes[0] ?? 0);
+    o.y = dead(p.axes[1] ?? 0);
+    o.lt = b(6);
+    o.rt = b(7);
+    o.a = b(0) > 0.5;
+    o.back = b(1) > 0.5;
+    return o;
   }
 
   // ------------------------------------------------------------------------- the cue sheet
   // Sounds and beats on the timeline. clock: 'open' (from 0:00), 'dive' (from diveAt), 'micro' (from
-  // MicroIntro.start()). Exported as `intro.cues` (the audio animatic's cue sheet).
+  // MicroIntro.start()). `cap` is the cue's caption [text, seconds]: captions run whoever plays the
+  // sound (a MicroIntro that owns its sound still gets the director's captions for it). Exported as
+  // `intro.cues` (the audio animatic's cue sheet).
   buildCues() {
     const a = this.audio;
-    const cue = (clock, at, name, fn) => ({ clock, at, name, fn, done: false });
+    const cue = (clock, at, name, fn, cap = null) => ({ clock, at, name, fn, cap, done: false });
     return [
-      cue('open', 1.0, 'blackbird, distant', () => {
-        a.bird(0, { kind: 'blackbird', level: 0.05, pan: -0.55 });
-        a.caption('[a bird]');
-      }),
+      // Sound before image: the bird goes straight to the bed's filter (the bed itself comes up at 3.6 s).
+      cue('open', 1.0, 'blackbird, distant', () => a.bird(0, { kind: 'blackbird', level: 0.05, pan: -0.55, dest: a.bedFilter }), ['[a bird]', 2.4]),
       cue('open', 1.6, 'breath: unsteady', () => a.setBreathing('unsteady')),
-      cue('open', 2.6, 'a sniff', () => {
-        a.breath('sniff', 0, { level: 0.12 });
-        a.caption('[someone crying quietly]', 3);
-      }),
-      cue('open', 3.2, 'glass A (the motif: A)', () => a.glassA(0, { level: 0.07, caption: '[a wet glass rings]' })),
+      cue('open', 2.6, 'a sniff', () => a.breath('sniff', 0, { level: 0.12 }), ['[someone crying quietly]', 3]),
+      cue('open', 3.2, 'glass A (the motif: A)', () => a.glassA(0, { level: 0.07 }), ['[a wet glass rings]', 2.6]),
       cue('open', 3.6, 'garden bed in', () => a.gardenIn(4)),
-      cue('open', T.click, 'a fingernail clicks on brass', () => a.click()),
+      cue('open', T.click, 'a fingernail clicks on brass', () => a.click(), ['[a fingernail taps brass]', 1.8]),
       cue('open', T.steady, 'breath steadies; the exhale is the motif U', () => {
         a.setBreathing('steady');
         a.breath('u', 0, { dur: 2.4, level: 0.07 });
-        a.caption('[a long breath out; the breathing steadies]', 3);
-      }),
+      }, ['[a long breath out; the breathing steadies]', 3]),
       cue('open', 7.3, 'the glass settles into a drone on A', () => a.droneIn(0.035, 4)),
       // Glass G (the motif's G) sounds on the dive input itself, see requestDive(); listed for the sheet.
       cue('dive', 0, 'glass G (on the dive input: A-U-G, start)', () => {}),
-      cue('dive', 8.0, 'the breath stretches into a tide', () => a.tideIn(2.5, 0.45)),
-      cue('dive', 3.2, 'birdsong slows', () => a.caption('[birdsong slows into long moans]', 3)),
-      cue('dive', 6.0, 'a fine hiss rises', () => a.caption('[a fine, granular hiss]', 2.5)),
-      cue('micro', 3.0, 'walled rods: thin glass harmonics', () => a.rodsIn(6)),
+      cue('dive', 3.2, 'birdsong slows', () => {}, ['[birdsong slows into long moans]', 3]),
+      cue('dive', 6.0, 'a fine hiss rises', () => {}, ['[a fine, granular hiss]', 2.5]),
+      cue('dive', 8.0, 'the breath stretches into a tide', () => a.tideIn(2.5, 0.45), ['[the breath slows into a tide]', 2.8]),
+      cue('micro', 3.0, 'walled rods: thin glass harmonics', () => a.rodsIn(6), ['[thin glass tones]', 2.6]),
       ...[6.6, 7.6, 8.8, 9.9, 11.0].map((at, i) => cue('micro', at, `rod ${i + 1} fades`, () => a.rodOut(i + 1))),
-      cue('micro', 8.0, 'the wall splits: the hero’s wobble', () => a.heroWobble()),
+      cue('micro', 8.0, 'the wall splits: the hero’s wobble', () => a.heroWobble(), ['[a soft, warm wobble]', 2.6]),
     ];
   }
 
   runCues() {
     for (const c of this.cues) {
       if (c.done) continue;
-      if (c.clock === 'micro' && this.microOwnsSound) continue;
       const clock = c.clock === 'open' ? this.t : c.clock === 'dive' ? (this.diveAt != null && this.t >= this.diveAt ? this.td : -1) : this.state === 'micro' ? this.tm : -1;
       if (clock >= c.at) {
         c.done = true;
-        c.fn(this);
+        // A MicroIntro that owns its sound plays the micro cues itself; their captions stay here.
+        if (!(c.clock === 'micro' && this.microOwnsSound)) c.fn(this);
+        if (c.cap) this.caption(...c.cap);
       }
     }
   }
@@ -605,14 +666,48 @@ export class Intro {
   // ------------------------------------------------------------------------------ frame
   // Called by the game loop every frame while `active`. Steps the timeline, then draws what the
   // composer's frame needs from the Garden.
+  //
+  // The opening keeps time by the wall clock, not by the game's `real` (which main.js clamps to
+  // 1/20 s): on a machine that draws the Garden at 12 fps the opening still lands at 0:46 and the
+  // sound (on the audio clock) stays with the picture. Only a long gap (a hidden tab) is clamped,
+  // to 0.25 s. Headless renders (?frames) keep the caller's fixed step.
   update(real) {
-    this.step(real);
-    if (this.inGarden && this.state !== 'done') this.garden.prerender(this.renderer);
+    let dt = real;
+    if (!this.headless) {
+      const now = performance.now() / 1000;
+      dt = this.wallLast == null ? real : clamp(now - this.wallLast, 0, 0.25);
+      this.wallLast = now;
+    }
+    this.step(Math.min(dt, 0.25));
+    this.drawGate();
+    if (this.inGarden && this.state !== 'done' && this.drawing) this.garden.prerender(this.renderer);
+  }
+
+  // While the pre-roll or the veil hides the image entirely (0:00 to 0:04), nothing of the Garden is
+  // drawn: no far layer, no glass, no scene pass, no bloom; the veil draws the dawn on its own.
+  drawGate() {
+    if (!this.garden) return;
+    const hidden = this.state === 'preroll' || (this.state === 'garden' && this.veil.uniforms.uReveal.value <= 0 && this.veil.uniforms.uHold.value <= 0);
+    if (hidden === !this.drawing) return;
+    this.drawing = !hidden;
+    const L = this.look;
+    if (hidden) {
+      this.gated = { scene: L.scenePass.enabled, bloom: L.bloom?.enabled };
+      L.scenePass.enabled = false;
+      if (L.bloom) L.bloom.enabled = false;
+      this.garden.pass.enabled = false;
+    } else if (this.gated) {
+      L.scenePass.enabled = this.gated.scene;
+      if (L.bloom) L.bloom.enabled = this.gated.bloom;
+      this.garden.pass.enabled = this.inGarden;
+      this.gated = null;
+    }
   }
 
   // The timeline alone (no drawing): also used to seek.
   step(real) {
     if (this.state === 'done') return;
+    real = Math.min(real, 0.25);
     const size = this.renderer.getDrawingBufferSize(_v2);
     if (size.x !== this.garden.size.x || size.y !== this.garden.size.y) this.garden.setSize(size.x, size.y);
     if (this.state === 'preroll') {
@@ -624,6 +719,7 @@ export class Intro {
       return;
     }
     this.t += real;
+    this.pad = this.pollGamepad();
     this.audio.tick();
     this.ui.tickCaption(this.clockNow());
     this.stepSkip(real);
@@ -639,7 +735,7 @@ export class Intro {
     const g = this.garden;
     const t = this.t;
     // The dawn brightens as the image opens.
-    g.expo = 0.74 + 0.26 * smooth(T.reveal, 7.5, t);
+    g.expo = 0.82 + 0.3 * smooth(T.reveal, 7.5, t);
     if (this.diveAt == null || t < this.diveAt) this.stepHub(real);
     if (this.diveAt != null) this.stepDive(real);
     g.update(real);
@@ -660,7 +756,7 @@ export class Intro {
     const g = this.garden;
     const h = this.hub;
     const t = this.t;
-    const pad = this.pollGamepad();
+    const pad = this.pad;
     // Parallax from 0:05: the cursor tilts the eye by up to 2 degrees.
     const pg = t >= T.parallax ? this.cursor : _zero;
     h.parallax.lerp(pg, ease(real, 0.45));
@@ -702,14 +798,18 @@ export class Intro {
         const k = (B.y - _ray.ray.origin.y) / _ray.ray.direction.y;
         const px = _ray.ray.origin.x + _ray.ray.direction.x * k;
         const pz = _ray.ray.origin.z + _ray.ray.direction.z * k;
-        // A critically damped spring, about a quarter second.
+        // A critically damped spring, about a quarter second (substepped: stable at any frame rate).
         const w = 13;
-        const ax = w * w * (px - h.loupe.x) - 2 * w * h.vel.x;
-        const az = w * w * (pz - h.loupe.z) - 2 * w * h.vel.y;
-        h.vel.x += ax * real;
-        h.vel.y += az * real;
-        h.loupe.x += h.vel.x * real;
-        h.loupe.z += h.vel.y * real;
+        const n = Math.max(1, Math.ceil(real / (1 / 120)));
+        const dt = real / n;
+        for (let k = 0; k < n; k++) {
+          const ax = w * w * (px - h.loupe.x) - 2 * w * h.vel.x;
+          const az = w * w * (pz - h.loupe.z) - 2 * w * h.vel.y;
+          h.vel.x += ax * dt;
+          h.vel.y += az * dt;
+          h.loupe.x += h.vel.x * dt;
+          h.loupe.z += h.vel.y * dt;
+        }
       }
       const r = Math.hypot(h.loupe.x, h.loupe.z);
       if (r > 46) h.loupe.multiplyScalar(46 / r);
@@ -794,7 +894,7 @@ export class Intro {
     // 0:12: a faint pictogram beside the rim, if nothing has happened.
     const idle = this.lastInput < 0;
     const showPicto = idle && t >= T.pictogram;
-    const css = this.cssOf(o.discC);
+    const css = this.cssOf(o.discC, _css);
     const rCss = (o.discR / g.size.y) * innerHeight;
     this.ui.setPicto(showPicto, css.x + rCss + 18, css.y);
     // The dive by itself: 0:17 with no input; otherwise after 9 s of rest, and at 0:38 at the latest.
@@ -811,8 +911,10 @@ export class Intro {
     if (this.diveAt != null || this.state !== 'garden') return;
     const h = this.hub;
     this.diveSource = source;
-    // The dive itself sounds glass G: A-U-G, start.
-    this.audio.glassG(0, { level: 0.11, caption: '[a second glass note]' });
+    // The dive itself sounds glass G: A-U-G, start. The focus whisper stops with the hub.
+    this.audio.glassG(0, { level: 0.11 });
+    this.caption('[a second glass note]');
+    this.audio.focusWhisper(0, 0);
     this.ui.setPicto(false);
     // If the glass is over another bead, the child's hand takes it back to the tear bead first.
     const off = Math.hypot(h.loupe.x, h.loupe.z) > 1.5 || Math.abs(h.d - LOUPE.rest) > 1.5;
@@ -839,7 +941,7 @@ export class Intro {
     }
     // W, scroll or a trigger hurries the dive, never past four times the authored pace (the whole
     // path then still takes longer than the 3 s replay dive).
-    const pad = this.pollGamepad();
+    const pad = this.pad;
     const want = this.keys.has('KeyW') || this.wheel > 0 || (pad && pad.rt > 0.3) ? 4 : 1;
     this.wheel = 0;
     this.diveRate += (want - this.diveRate) * ease(real, want > this.diveRate ? 0.5 : 1.2);
@@ -990,6 +1092,12 @@ export class Intro {
       // director plays the micro cues itself) and finish the frame with no time step.
       if (!this.microError) console.warn('Intro: MicroIntro.update threw; its sound is detached.', err);
       this.microError = true;
+      // Let its voices down before letting go of them, so none of them sounds on.
+      try {
+        m.audio?.stop?.(0.3);
+      } catch {
+        /* already gone */
+      }
       m.audio = null;
       this.microOwnsSound = false;
       try {
@@ -1017,29 +1125,46 @@ export class Intro {
     if (m.done) this.finish();
   }
 
+  // The hand-over's interface and sound are owned separately: the HUD by whoever shows it (MicroIntro
+  // in its glide, or the director for a stand-in), the chord and ripple by whoever plays the micro
+  // half's sound (the director too once it has taken the sound back). Either way the descent's own
+  // sound (shimmer, hiss, rods, wobble) is let down here.
   showHud() {
     this.hudShown = true;
-    if (this.microOwnsHud) return; // MicroIntro brings the interface in, with its chord and ripple
-    this.hud?.show?.(true, 1.2);
-    this.audio.chord();
-    this.audio.ripple();
+    if (!this.microOwnsHud) this.hud?.show?.(true, 1.2);
+    if (!this.microOwnsSound) {
+      this.audio.chord();
+      this.audio.ripple();
+      this.caption('[a held chord]', 2.6);
+    } else this.audio.quiet();
   }
 
   // --------------------------------------------------------------------------------- skip
   // Hold Escape (or B on a pad) for 1 s at any time: one blink, then shot 7's end state.
   stepSkip(real) {
     if (this.state === 'blink' || this.state === 'done') return;
-    const pad = this.pollGamepad();
+    const pad = this.pad;
     const held = this.keys.has('Escape') || (pad && pad.back);
     this.skipHold = held ? this.skipHold + real : Math.max(0, this.skipHold - real * 3);
     let x = innerWidth / 2, y = innerHeight / 2, r = 46;
     if (this.state === 'garden' && this.garden.loupeOn) {
       const o = this.garden.optics;
-      const c = this.cssOf(o.discC);
+      const c = this.cssOf(o.discC, _css);
       x = c.x;
       y = c.y;
       // On the brass bezel (its middle is 1.13 of the glass's radius).
       r = clamp((o.discR / this.garden.size.y) * innerHeight * 1.13, 40, innerHeight * 0.45);
+    } else if (this.inMicro && this.hero?.group) {
+      // In the drop the ring sits round the soft cell (story §5.3), once it is on screen.
+      const cam = this.camera;
+      const p = _a.copy(this.hero.group.position).project(cam);
+      if (p.z < 1 && Math.abs(p.x) < 0.9 && Math.abs(p.y) < 0.9) {
+        x = (p.x * 0.5 + 0.5) * innerWidth;
+        y = (0.5 - p.y * 0.5) * innerHeight;
+        const dist = Math.max(cam.position.distanceTo(this.hero.group.position), 0.05);
+        const px = innerHeight / (2 * Math.tan(THREE.MathUtils.degToRad(cam.fov / 2)));
+        r = clamp((1.9 / dist) * px, 40, innerHeight * 0.3);
+      }
     }
     this.ui.setSkip(this.skipHold, x, y, r);
     if (this.skipHold >= 1) {
@@ -1135,6 +1260,7 @@ export class Intro {
     if (!this.hudShown) this.showHud();
     if (!this.inMicro) this.enterMicro();
     if (this.controls) this.controls.enabled = true;
+    if (this.player && 'enabled' in this.player) this.player.enabled = true;
     try {
       localStorage.setItem(SEEN, '1');
     } catch {
@@ -1148,6 +1274,11 @@ export class Intro {
   // expects it. The audio stays (the tide carries on as the drop's ambience).
   dispose() {
     const c = this.composer;
+    if (this.gated) {
+      this.look.scenePass.enabled = this.gated.scene;
+      if (this.look.bloom) this.look.bloom.enabled = this.gated.bloom;
+      this.gated = null;
+    }
     if (this.garden) {
       c.removePass?.(this.garden.pass);
       c.removePass?.(this.veil);
@@ -1162,6 +1293,7 @@ export class Intro {
 }
 
 const _v2 = new THREE.Vector2();
+const _css = new THREE.Vector2();
 const _zero = new THREE.Vector2(0, 0);
 const _a = new THREE.Vector3();
 const _b = new THREE.Vector3();

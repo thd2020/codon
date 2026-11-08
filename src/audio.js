@@ -12,7 +12,10 @@
 //
 // Browsers start an AudioContext suspended until a click or key press, so nothing is built until
 // resume() is called from that gesture. Until then every method does nothing (headless renders
-// stay silent).
+// stay silent). Captions are the director's (intro.js), so they show whether or not sound plays.
+//
+// Everything that repeats after the opening runs inside the audio graph itself (the tide's swell is
+// an oscillator on its gain), so the drop's ambience carries on with no one calling tick().
 
 const A5 = 880;
 const G5 = 783.99;
@@ -23,9 +26,9 @@ const smooth = (e0, e1, x) => {
 };
 
 export class IntroAudio {
-  constructor({ onCaption = null } = {}) {
+  constructor() {
     this.ctx = null;
-    this.onCaption = onCaption;
+    this.settled = false;
     this.breathState = 'unsteady';
     this.nextBreath = 0;
     this.nextBird = 0;
@@ -44,7 +47,8 @@ export class IntroAudio {
     return this.ctx ? this.ctx.currentTime : 0;
   }
 
-  // Call from a click or key press.
+  // Call from a click or key press (an activation-triggering one: not Escape, and pointerup for touch).
+  // Safe to call again from any later gesture while the context is still suspended.
   resume() {
     if (!this.ctx) {
       const AC = globalThis.AudioContext || globalThis.webkitAudioContext;
@@ -57,10 +61,6 @@ export class IntroAudio {
       this.build();
     }
     this.ctx.resume?.();
-  }
-
-  caption(text, seconds = 2.6) {
-    this.onCaption?.(text, seconds);
   }
 
   // ----------------------------------------------------------------------------- the graph
@@ -131,9 +131,18 @@ export class IntroAudio {
     bs.gain.value = 0.25;
     this.breathOut.connect(bs).connect(this.verb);
 
-    // The tide: the breath slowed into the drop's swell.
+    // The tide: the breath slowed into the drop's swell, one every 8 s (in about 3.2 s, out 4.8 s),
+    // driven by a slow oscillator on its gain so it needs no scheduling: 0.05 .. 0.32.
     this.tide = c.createGain();
-    this.tide.gain.value = 0;
+    this.tide.gain.value = 0.185;
+    const swell = c.createOscillator();
+    // A sine with a little second harmonic: a quicker rise and a longer fall.
+    swell.setPeriodicWave(c.createPeriodicWave(new Float32Array([0, 0, 0]), new Float32Array([0, 1, 0.22]), { disableNormalization: true }));
+    swell.frequency.value = 0.125;
+    const swellG = c.createGain();
+    swellG.gain.value = 0.135 / 1.08;
+    swell.connect(swellG).connect(this.tide.gain);
+    swell.start();
     const tf = c.createBiquadFilter();
     tf.type = 'lowpass';
     tf.frequency.value = 420;
@@ -274,7 +283,7 @@ export class IntroAudio {
   // ----------------------------------------------------------------------------- the voices
   // A rubbed glass: a nearly pure tone that swells in, beats softly, with a faint inharmonic partial
   // and a breath of friction at the start.
-  glass(freq, delay = 0, { level = 0.16, dur = 5.5, caption = '[a glass rings]' } = {}) {
+  glass(freq, delay = 0, { level = 0.16, dur = 5.5 } = {}) {
     if (!this.on) return;
     const c = this.ctx;
     const at = this.now + delay;
@@ -302,7 +311,6 @@ export class IntroAudio {
     const ng = c.createGain();
     this.env(ng.gain, at, [[0, 0], [0.12, level * 0.25], [0.6, 0]]);
     n.connect(nf).connect(ng).connect(out);
-    if (caption) this.caption(caption);
   }
 
   glassA(delay = 0, opts = {}) {
@@ -359,8 +367,11 @@ export class IntroAudio {
 
   // A blackbird (or a smaller garden bird): fluty warbled notes, then a twitter. Stretched as the
   // frame shrinks: slower, lower, into long moans.
-  bird(delay = 0, { kind = 'blackbird', level = 0.05, pan = -0.5 } = {}) {
+  // dest: the bus it sings into (the garden bed by default; the very first bird, before the bed is
+  // up, goes straight to the bed's filter so it is heard over the silence).
+  bird(delay = 0, { kind = 'blackbird', level = 0.05, pan = -0.5, dest = null } = {}) {
     if (!this.on) return;
+    const bus = dest ?? this.bed;
     const c = this.ctx;
     const k = this.stretch;
     const pitch = 1 / Math.pow(k, 0.85);
@@ -370,8 +381,8 @@ export class IntroAudio {
     out.gain.value = level;
     if (p) {
       p.pan.value = pan;
-      out.connect(p).connect(this.bed);
-    } else out.connect(this.bed);
+      out.connect(p).connect(bus);
+    } else out.connect(bus);
     const r = Math.random;
     const notes =
       kind === 'blackbird'
@@ -416,7 +427,6 @@ export class IntroAudio {
       o.start(at);
       o.stop(at + d + 0.05);
     }
-    this.caption('[a soft ting]', 1.6);
   }
 
   // A fingernail on brass: a short tick and a small metallic ring.
@@ -441,7 +451,6 @@ export class IntroAudio {
       o.start(at);
       o.stop(at + 0.25);
     }
-    this.caption('[a fingernail taps brass]', 1.8);
   }
 
   // A felt thock as the glass moves.
@@ -473,7 +482,6 @@ export class IntroAudio {
     g.connect(this.verb);
     o.start(at);
     o.stop(at + 1.9);
-    this.caption('[a deep, soft drop]');
   }
 
   // ------------------------------------------------------------------------- continuous parts
@@ -491,7 +499,7 @@ export class IntroAudio {
 
   // blur01: 0 sharp .. 1 smeared; activity: how fast focus is changing (0..1).
   focusWhisper(blur01, activity) {
-    if (!this.on) return;
+    if (!this.on || this.settled) return;
     const t = this.now;
     this.whisper.gain.setTargetAtTime(0.05 * clamp(activity, 0, 1) * (0.25 + blur01), t, 0.08);
     this.whisperF.frequency.setTargetAtTime(700 + 4200 * (1 - blur01), t, 0.08);
@@ -500,7 +508,7 @@ export class IntroAudio {
   // The frame's height in metres drives the time-stretch (story §6.4): the bed's cutoff falls
   // from 18 kHz at 1 cm to 400 Hz at 10 µm, the birds slow, the hiss rises, the drone dissolves.
   setScale(h) {
-    if (!this.on) return;
+    if (!this.on || this.settled) return;
     const dec = clamp(-2 - Math.log10(Math.max(h, 1e-9)), 0, 3.3);
     this.decades = dec;
     this.stretch = Math.pow(2, 0.75 * dec);
@@ -516,10 +524,8 @@ export class IntroAudio {
   tideIn(seconds = 2.5, level = 0.5) {
     if (!this.on) return;
     this.tideOn = true;
-    this.nextTide = this.now;
     this.ramp(this.tideLevel.gain, level, seconds);
     this.ramp(this.breathOut.gain, 0, seconds);
-    this.caption('[the breath slows into a tide]', 2.8);
   }
 
   // Thin glass harmonics of the walled rods (shot 6).
@@ -544,7 +550,6 @@ export class IntroAudio {
       g.gain.setTargetAtTime(0.012, this.now, 0.8);
       this.rodVoices.push({ o, g, v });
     }
-    this.caption('[thin glass tones]');
   }
 
   rodOut(i, seconds = 1.2) {
@@ -582,7 +587,6 @@ export class IntroAudio {
     g.connect(this.verb);
     g.gain.setTargetAtTime(0.022, this.now, 0.4);
     this.wobble = g;
-    this.caption('[a soft, warm wobble]');
   }
 
   // The handoff: the motif resolves into a held chord; a soft click-ripple as the ring appears.
@@ -605,11 +609,27 @@ export class IntroAudio {
     }
     lp.connect(g).connect(this.master);
     g.connect(this.verb);
-    for (const r of this.rodVoices) r.g.gain.setTargetAtTime(0, at, 1);
-    if (this.wobble) this.wobble.gain.setTargetAtTime(0, at + 2, 1.5);
-    this.ramp(this.shimmer.gain, 0, 4);
-    this.ramp(this.hiss.gain, 0.025, 4);
-    this.caption('[a held chord]');
+    this.quiet();
+  }
+
+  // The hand-over, whoever plays the chord: the drone's shimmer, the rods and the wobble fade out
+  // and the hiss drops to a breath, so nothing of the descent sounds on into the game.
+  quiet(seconds = 4) {
+    if (!this.on) return;
+    const at = this.now;
+    for (const r of this.rodVoices) {
+      r.g.gain.cancelScheduledValues(at);
+      r.g.gain.setTargetAtTime(0, at, seconds / 4);
+      r.out = true;
+    }
+    if (this.wobble) {
+      this.wobble.gain.cancelScheduledValues(at);
+      this.wobble.gain.setTargetAtTime(0, at + Math.min(2, seconds / 2), seconds / 4);
+    }
+    this.ramp(this.shimmer.gain, 0, seconds);
+    this.ramp(this.hiss.gain, 0.02, seconds);
+    this.ramp(this.drone.gain, 0, seconds);
+    this.ramp(this.whisper.gain, 0, 0.3);
   }
 
   ripple() {
@@ -632,7 +652,8 @@ export class IntroAudio {
     if (this.on) this.nextBreath = Math.min(this.nextBreath, this.now + 0.4);
   }
 
-  // Schedules what repeats: breaths, birds, the tide's swells. Call every frame.
+  // Schedules what repeats during the opening: breaths and birds. The director calls it every frame;
+  // nothing needs it after the hand-over.
   tick() {
     if (!this.on) return;
     const t = this.now;
@@ -654,27 +675,20 @@ export class IntroAudio {
       this.bird(0, { kind: blackbird ? 'blackbird' : 'small', level: blackbird ? 0.035 : 0.02, pan: Math.random() * 1.6 - 0.8 });
       this.nextBird = t + (2.5 + Math.random() * 4.5) * Math.min(this.stretch, 3);
     }
-    if (this.tideOn && t >= this.nextTide - 0.1) {
-      // One swell every 8 s: in 3.2 s, out 4.8 s.
-      const at = Math.max(this.nextTide, t);
-      this.env(this.tide.gain, at, [[0, 0.05], [3.2, 0.32], [8, 0.05]]);
-      this.nextTide = at + 8;
-    }
   }
 
-  // After the opening: only the tide stays, quieter, with a breath of hiss.
-  settle() {
+  // After the opening (the end of the glide, or a skip): only the tide stays, quieter, with a breath
+  // of hiss. Everything else of the opening is let down, whoever was playing it, and nothing the
+  // timeline still sends (setScale, the whisper) can bring it back.
+  settle(seconds = 3) {
     if (!this.on) return;
-    this.ramp(this.bed.gain, 0, 3);
-    this.ramp(this.breathOut.gain, 0, 2);
-    this.ramp(this.whisper.gain, 0, 0.5);
-    this.ramp(this.drone.gain, 0, 3);
-    this.ramp(this.tideLevel.gain, 0.32, 3);
+    this.quiet(seconds);
+    this.settled = true;
+    this.ramp(this.bed.gain, 0, seconds);
+    this.ramp(this.breathOut.gain, 0, Math.min(2, seconds));
+    this.ramp(this.tideLevel.gain, 0.32, seconds);
     this.nextBird = 0;
-    if (!this.tideOn) {
-      this.tideOn = true;
-      this.nextTide = this.now;
-    }
+    this.tideOn = true;
   }
 
   dispose() {

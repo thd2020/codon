@@ -25,7 +25,9 @@ import { ORGANELLE, BRAND } from './palette.js';
 export const B = new THREE.Vector3(0, 3.55, 0); // the tear bead's centre (after the merge)
 export const BEAD_R = 2.15;
 export const EYE_H = 117; // the child's eye above the bead in the hub
-export const LOUPE = { f: 25, R: 15, rest: 23, min: 6, max: 45 }; // focal length 250/10 mm, clear radius
+// focal length 250/10 mm, clear radius. Raised to 60 mm the image is inverted at about -6x (the
+// least it gets between the two flip heights, 36 and 81 mm): the upside-down world reads.
+export const LOUPE = { f: 25, R: 15, rest: 23, min: 6, max: 60 };
 export const FOV = 42;
 
 // Dawn, before the sun is up (display sRGB). The sky is lilac overhead, pearl at the horizon and warm
@@ -43,7 +45,9 @@ const DAWN = {
 // The sun's azimuth, about 12 degrees up (the morning sunDir of the story).
 const GLOW_DIR = new THREE.Vector3(0.35, 0.12, 0.45).normalize();
 // The leaf.
-const LEAF = { R0: 40, lobes: 9, sinus: -Math.PI / 2 - 0.42, tooth: 1.25, teeth: 9, cup: 8.0, pleat: 5.2 };
+// bend: how far (radians at the margin) the lobes and their veins curve as they run out; it is zero at
+// the sinus, so the basal cut stays straight.
+const LEAF = { R0: 40, lobes: 9, sinus: -Math.PI / 2 - 0.42, tooth: 1.25, teeth: 9, cup: 8.0, pleat: 4.0, bend: 0.09, phase: 0 };
 const NB = 32; // beads the leaf shader knows about
 
 const TAU = Math.PI * 2;
@@ -182,9 +186,16 @@ const CHILD = /* glsl */ `
 // The lady's mantle blade, in the leaf's own flat coordinates (mm, x and z before the cup and the
 // pleats lift it). Shared by the leaf and by the beads, which see the blade magnified below them.
 const BLADE = /* glsl */ `
-  uniform float uR0, uLobes, uSinus, uTooth, uTeeth;
+  uniform float uR0, uLobes, uSinus, uTooth, uTeeth, uBend, uBendPhase;
   uniform vec3 uLeafA, uLeafB, uVein, uLeafEdge, uLeafDeep;
-  float lobeU(float phi) { return (phi - uSinus) * uLobes / TAU; }
+  // The angle round the blade from the sinus (0..TAU), bent a little with the distance out, so the
+  // lobes and the veins in their valleys curve as they run to the margin, each lobe differently.
+  float psiOf(float phi, float rn) {
+    float psi = mod(phi - uSinus, TAU);
+    return psi + uBend * pow(clamp(rn, 0.0, 1.2), 1.5) * (0.8 * sin(1.5 * psi) + 0.35 * sin(4.0 * psi + 1.0 + uBendPhase) * sin(0.5 * psi));
+  }
+  float lobeU2(float phi, float rn) { return psiOf(phi, rn) * uLobes / TAU; }
+  float lobeU(float phi) { return lobeU2(phi, 0.95); }
   // Radius of the margin at angle phi: shallow rounded lobes, each with a row of small teeth.
   float marginR(float phi) {
     float f = fract(lobeU(phi));
@@ -204,27 +215,39 @@ const BLADE = /* glsl */ `
     return d;
   }
   // The blade's colour. pw: the size of a pixel on the blade (mm), which decides how fine a detail
-  // can still be drawn. bump: the slope of the surface (the areoles between the smallest veins are
-  // little domes, which is what makes the blade look quilted), in the blade's flat coordinates.
+  // can still be drawn. bump: the slope of the surface in the blade's flat coordinates. Nothing here
+  // is a drawn line: veins are grooves with a faint paler floor, the areoles little domes, the cells
+  // soft cushions, the hair feet small mounds. Each fades in only once it is a few pixels wide.
   vec3 bladeColor(vec2 p, float pw, out vec2 bump) {
     float rho = length(p), phi = atan(p.y, p.x), rn = rho / uR0;
-    float u = lobeU(phi), fu = fract(u);
+    float u = lobeU2(phi, rn), fu = fract(u);
     float lobe = floor(u);
     float dv = (fu - 0.5) * TAU / uLobes;
     float along = rho * cos(dv), across = rho * sin(dv);
     vec3 col = mix(uLeafA, uLeafB, clamp(0.5 + 0.7 * (vn2(p * 0.085) - 0.5) + 0.4 * (rn - 0.55), 0.0, 1.0));
-    float valley = 1.0 - pow(abs(cos(PI * u)), 0.7);
-    col = mix(col, uLeafDeep, valley * 0.16 * smoothstep(0.1, 0.5, rn));
-    // Primary veins: narrow, a little paler, wavering slightly, one to each lobe, each sunk in a
-    // shallow groove (relief, not a drawn line).
-    float wob = (vn2(vec2(rho * 0.3, lobe * 7.1)) - 0.5) * 0.35;
-    float hw1 = mix(0.13, 0.05, rn);
+    // The pleats' valleys (where the primaries run) are a little deeper in colour.
+    float vpan = 2.0 * fract(u + 0.5) - 1.0; // -1..1 from valley to valley, 0 on the ridge
+    float valley = smoothstep(0.35, 1.0, abs(vpan));
+    col = mix(col, uLeafDeep, valley * 0.3 * smoothstep(0.08, 0.45, rn));
+    // Primary veins, one to each lobe, converging on the petiole: sunk grooves with a faintly paler
+    // floor. Past two thirds of the way out each forks toward the lobe's flanks.
+    float wob = (vn2(vec2(rho * 0.3, lobe * 7.1)) - 0.5) * 0.3;
+    float hw1 = mix(0.12, 0.05, rn);
     float a1 = across + wob;
-    float v1 = lineAA(abs(a1), hw1, pw) * smoothstep(0.8, 3.0, rho);
+    float fk = max(rho - (0.62 + 0.08 * h12(vec2(lobe, 5.0))) * uR0, 0.0) * 0.32;
+    float a1f = fk > 0.0 ? min(abs(a1 - fk), abs(a1 + fk)) : abs(a1);
+    float hwf = mix(hw1, hw1 * 0.7, smoothstep(0.0, 1.0, fk));
+    float aV = min(abs(a1), a1f);
+    float wV = aV < abs(a1) ? hwf : hw1;
+    float sgV = max(wV * 1.6, 0.55 * pw);
+    float v1 = exp(-aV * aV / (2.0 * sgV * sgV)) * (wV / max(wV, 0.6 * pw)) * smoothstep(0.25, 0.9, rho);
     float phv = uSinus + (lobe + 0.5) * TAU / uLobes;
     vec2 gAcross = vec2(-sin(phv), cos(phv)), gAlong = vec2(cos(phv), sin(phv));
-    float sg1 = hw1 * 2.2;
-    vec2 groove = -gAcross * (0.16 * a1 / (sg1 * sg1)) * exp(-a1 * a1 / (2.0 * sg1 * sg1)) * smoothstep(0.8, 3.0, rho);
+    float sg1 = wV * 2.2;
+    float sgn1 = aV < abs(a1) ? sign(a1 - (a1 > 0.0 ? fk : -fk)) : sign(a1);
+    vec2 groove = -gAcross * sgn1 * (0.16 * aV / (sg1 * sg1)) * exp(-aV * aV / (2.0 * sg1 * sg1)) * smoothstep(0.25, 0.9, rho);
+    // The petiole's knot at the centre, where the primaries meet: a soft, paler boss.
+    float knot = exp(-rho * rho / 0.5);
     // Secondary veins from the primary out to the teeth, curving, irregular.
     float sp = 3.0 + 0.7 * h12(vec2(lobe, 3.0));
     float s = along - abs(across) * (1.2 - 0.01 * abs(across)) + 1.1 * (vn2(p * 0.22) - 0.5);
@@ -232,30 +255,35 @@ const BLADE = /* glsl */ `
     float hw2 = mix(0.075, 0.03, rn);
     float a2 = (s - k * sp) * 0.64;
     float on2 = step(0.5, k) * smoothstep(hw1 + 0.15, hw1 + 1.0, abs(across)) * (0.55 + 0.45 * vn2(p * 0.7));
-    float v2 = lineAA(abs(a2), hw2, pw) * on2;
-    float sg2 = hw2 * 2.4;
+    float sg2 = max(hw2 * 1.6, 0.55 * pw);
+    float v2 = exp(-a2 * a2 / (2.0 * sg2 * sg2)) * (hw2 / max(hw2, 0.6 * pw)) * smoothstep(0.1, 0.4, hw2 / pw) * on2;
+    float sg2b = hw2 * 2.4;
     vec2 gs = normalize(gAlong - 1.2 * sign(across) * gAcross);
-    groove -= gs * (0.06 * a2 / (sg2 * sg2)) * exp(-a2 * a2 / (2.0 * sg2 * sg2)) * on2;
-    // Areoles: little domes between the smallest veins, their borders faintly paler.
+    groove -= gs * (0.06 * a2 / (sg2b * sg2b)) * exp(-a2 * a2 / (2.0 * sg2b * sg2b)) * on2;
+    // Areoles: little domes between the smallest veins, their slopes falling to nothing at their
+    // borders, so the blade reads quilted without any line between them.
     vec2 q = p + 0.5 * vec2(vn2(p * 0.42), vn2(p * 0.42 + 9.1)) - 0.25;
     vec4 a = vorC(q / 1.1);
-    float v3 = lineAA(a.y * 1.1, 0.026, pw);
     float dome = smoothstep(0.012, 0.05, 1.1 / (pw * 60.0));
-    // Relief is drawn only where it is at least a few pixels wide.
-    // Each areole is a soft pillow: its slope falls to nothing at its borders, so the shading is
-    // continuous from one to the next.
     bump = a.zw * 0.38 * dome * smoothstep(0.0, 0.22, a.y) + groove * smoothstep(0.15, 0.6, sg1 / pw);
-    // Close up: epidermal cells, and the feet of the silver hairs.
-    vec2 e = vor(p / 0.045);
-    float cells = lineAA(e.y * 0.045, 0.003, pw);
-    vec2 hc = floor(p / 0.26);
-    vec2 hp = (hc + 0.2 + 0.6 * h22(hc)) * 0.26;
-    float hd = length(p - hp);
-    float foot = lineAA(abs(hd - 0.022), 0.006, pw);
-    float vein = max(v1 * (0.3 + 0.15 * h12(vec2(lobe, 9.0))), max(v2 * 0.26, v3 * 0.09));
-    col = mix(col, uVein, vein);
-    col *= 1.0 - 0.045 * cells;
-    col = mix(col, uVein * 1.06, clamp(foot, 0.0, 1.0) * 0.3);
+    // The areoles' crowns catch a little more light than their edges: shading, not outline.
+    col *= 1.0 + 0.05 * dome * (smoothstep(0.0, 0.3, a.y) - 0.5);
+    // Close up: the epidermal cells as soft cushions, and the feet of the silver hairs as small
+    // mounds, each faintly paler on its crown.
+    vec4 e = vorC(p / 0.045);
+    float cellK = smoothstep(2.0, 6.0, 0.045 / pw);
+    col *= 1.0 + 0.045 * cellK * (0.5 - smoothstep(0.1, 0.55, e.x));
+    bump += e.zw * 0.2 * cellK * smoothstep(0.0, 0.25, e.y);
+    vec2 hc = floor(p / 0.17);
+    vec2 hp = (hc + 0.2 + 0.6 * h22(hc)) * 0.17;
+    vec2 hdv = p - hp;
+    float hd2 = dot(hdv, hdv);
+    float footK = smoothstep(1.5, 4.0, 0.03 / pw) * step(h22(hc + 7.0).x, 0.88);
+    float mound = exp(-hd2 / (2.0 * 0.026 * 0.026));
+    bump += hdv / 0.026 * 0.55 * mound * footK;
+    col = mix(col, uVein * 1.05, mound * 0.35 * footK);
+    float vein = max(v1 * (0.16 + 0.08 * h12(vec2(lobe, 9.0))), v2 * 0.14);
+    col = mix(col, uVein, max(vein, knot * 0.35));
     return col;
   }
 `;
@@ -263,17 +291,27 @@ const BLADE = /* glsl */ `
 // ---------------------------------------------------------------------------------- the leaf
 // A polar grid bent into the blade: a shallow funnel, fan pleats with the veins in the valleys, and
 // a slow wave. The margin, teeth and sinus are cut per pixel (leafSd) so they stay crisp at any zoom.
+// The angle round the blade from the sinus, bent with the distance out (the same as psiOf in BLADE).
+function psiOf(phi, rn, L = LEAF) {
+  let psi = (phi - L.sinus) % TAU;
+  if (psi < 0) psi += TAU;
+  return psi + L.bend * Math.pow(clamp(rn, 0, 1.2), 1.5) * (0.8 * Math.sin(1.5 * psi) + 0.35 * Math.sin(4 * psi + 1.0 + L.phase) * Math.sin(0.5 * psi));
+}
+
 export function leafHeight(x, z, L = LEAF) {
   const rho = Math.hypot(x, z);
   const phi = Math.atan2(z, x);
   const rn = rho / L.R0;
-  const u = ((phi - L.sinus) * L.lobes) / TAU;
-  const pleat = Math.pow(Math.abs(Math.cos(Math.PI * u)), 0.6);
+  const u = (psiOf(phi, rn, L) * L.lobes) / TAU;
+  // Each panel between two veins is a shallow arch (a parabola across it): rounded ridges, the
+  // veins in soft creases, smooth shading from one side of a panel to the other.
+  const v = 2 * (u + 0.5 - Math.floor(u + 0.5)) - 1;
+  const pleat = 1 - v * v;
   return L.cup * Math.pow(rn, 1.6) + L.pleat * rn * pleat * smooth(0.0, 0.35, rn) + 1.3 * rn * rn * Math.sin(2 * phi + 0.9) + 0.5 * rn * rn * rn * Math.sin(5 * phi + 2.1);
 }
 
 function marginR(phi, L = LEAF) {
-  const u = ((phi - L.sinus) * L.lobes) / TAU;
+  const u = (psiOf(phi, 0.95, L) * L.lobes) / TAU;
   const f = u - Math.floor(u);
   const lobe = Math.pow(Math.sin(Math.PI * f), 0.55);
   const R = L.R0 * (0.885 + 0.115 * lobe);
@@ -350,8 +388,10 @@ const leafFragment = /* glsl */ `
 #ifdef LITE
     vec3 alb = mix(uLeafA, uLeafB, vn2(p * 0.07));
     float rn = length(p) / uR0;
-    float dv = (fract(lobeU(atan(p.y, p.x))) - 0.5) * TAU / uLobes;
-    alb = mix(alb, uVein, (1.0 - smoothstep(0.2, 0.9, abs(length(p) * sin(dv)))) * 0.18 * smoothstep(0.05, 0.2, rn));
+    float uu = lobeU2(atan(p.y, p.x), rn);
+    float dv = (fract(uu) - 0.5) * TAU / uLobes;
+    alb = mix(alb, uLeafDeep, smoothstep(0.35, 1.0, abs(2.0 * fract(uu + 0.5) - 1.0)) * 0.35 * smoothstep(0.08, 0.4, rn));
+    alb = mix(alb, uVein, exp(-pow(length(p) * sin(dv) / 0.5, 2.0)) * 0.12 * smoothstep(0.05, 0.2, rn));
     vec2 bump = vec2(0.0);
 #else
     vec2 bump;
@@ -364,9 +404,11 @@ const leafFragment = /* glsl */ `
     N = normalize(N + vec3(bump.x, 0.0, bump.y));
     vec3 V = normalize(cameraPosition - vWorld);
     vec3 hemi = skyHemi(N);
-    // Valleys of the pleats see less sky.
-    float valley = 1.0 - pow(abs(cos(PI * lobeU(atan(p.y, p.x)))), 0.7);
-    hemi *= mix(vec3(1.0), uLilac, valley * 0.22 * smoothstep(0.08, 0.4, length(p) / uR0));
+    // Valleys of the pleats see less sky: lilac in the creases.
+    float rnv = length(p) / uR0;
+    float vp = abs(2.0 * fract(lobeU2(atan(p.y, p.x), rnv) + 0.5) - 1.0);
+    float valley = smoothstep(0.3, 1.0, vp);
+    hemi *= mix(vec3(1.0), uLilac, valley * 0.42 * smoothstep(0.08, 0.4, rnv));
     // The beads: each shades the sky above the blade (a soft lilac shadow) and, being a lens,
     // gathers the glow into a bright core inside its own shadow.
     float occ = 0.0, key = 1.0;
@@ -382,9 +424,12 @@ const leafFragment = /* glsl */ `
     vec3 col = alb * (hemi + skyKey(N) * key);
     // Light through the blade from the glow side lights the pleats that face away from it.
     col += alb * vec3(1.0, 0.95, 0.6) * uLightGlow * 0.7 * max(dot(-N, glowL()), 0.0);
-    // The silver hairs: a fine sheen, strongest where the blade turns away from the eye.
+    // The silver hairs: a fine sheen, strongest where the blade turns away from the eye, and a
+    // broad silvery shine where the pleats face the glow (the hairs catch it like brushed metal).
     float nv = clamp(dot(N, V), 0.0, 1.0);
     col += uSheen * min(skyColor(reflect(-V, N)), vec3(1.4)) * (0.05 + 0.75 * pow(1.0 - nv, 2.5)) * uExpo;
+    float nh = max(dot(N, normalize(glowL() + V)), 0.0);
+    col += vec3(0.95, 0.93, 0.9) * uLightGlow * (pow(nh, 8.0) * 0.38 + pow(nh, 40.0) * 0.3) * key * uExpo;
     // A waxy highlight from the bright part of the sky.
     vec3 H = normalize(uGlowDir + V);
     col += uSun * pow(max(dot(N, H), 0.0), 60.0) * 0.08 * uExpo;
@@ -399,17 +444,10 @@ const leafFragment = /* glsl */ `
 const shellFragment = /* glsl */ `
   ${NOISE}
   ${SKY}
-  uniform float uR0, uLobes, uSinus, uTooth, uTeeth, uShellH, uHairLen;
+  ${BLADE}
+  uniform float uShellH, uHairLen, uTop;
   uniform vec3 uHair, uHaze;
   uniform float uHazeK;
-  float lobeU(float phi) { return (phi - uSinus) * uLobes / TAU; }
-  float marginR(float phi) {
-    float f = fract(lobeU(phi));
-    float lobe = pow(sin(PI * f), 0.55);
-    float R = uR0 * (0.885 + 0.115 * lobe);
-    float g = fract(f * uTeeth);
-    return R + uTooth * (1.0 - pow(abs(2.0 * g - 1.0), 0.72)) * (0.5 + 0.5 * lobe);
-  }
   varying vec2 vFlat;
   varying vec3 vWorld, vN;
   void main() {
@@ -422,27 +460,66 @@ const shellFragment = /* glsl */ `
     float ds = mod(phi - uSinus + PI, TAU) - PI;
     if (cos(ds) > 0.0 && rho > 9.0) sd = max(sd, 0.07 * (rho - 9.0) - rho * abs(sin(ds)));
     if (sd > 0.0) discard;
-    // One hair per cell, leaning outward, tapering toward its tip.
     float cell = 0.17;
-    vec2 c = floor(p / cell);
-    vec2 j = h22(c);
-    vec2 base = (c + 0.2 + 0.6 * j) * cell;
-    vec2 lean = normalize(base + 1e-3) * (0.55 + 0.5 * j.x) + (j - 0.5) * 0.6;
-    vec2 at = base + lean * uShellH * 0.8;
-    float r = 0.014 * (1.0 - 0.5 * h);
-    float d = length(p - at);
-    float mask = (1.0 - smoothstep(r - 0.5 * pw, r + 0.5 * pw, d)) * step(h22(c + 7.0).x, 0.88);
-    // Too fine to draw: the average coverage instead (the same everywhere), so the velvet never
-    // shimmers or shows the cells.
-    float cover = 0.88 * 3.14159 * r * r / (cell * cell);
-    mask = mix(mask, cover, smoothstep(0.35, 1.0, pw / (2.0 * r)));
+    float r0 = 0.014;
+    // How well single hairs resolve here: below about a pixel across they are a velvet sheen (the
+    // shells); above it each is traced whole, from foot to tip, in the top shell alone, so a close
+    // view never shows the shells as rows of dots.
+    float res = smoothstep(0.45, 1.1, r0 / pw);
+    if (uTop < 0.5 && res > 0.995) discard;
     vec3 N = normalize(vN);
     vec3 V = normalize(cameraPosition - vWorld);
     float nv = abs(dot(N, V));
-    // A slanted view crosses more hair.
-    float a = mask / max(nv, 0.22);
-    a += cover * 1.6 * (1.0 - nv) * smoothstep(0.35, 1.0, pw / (2.0 * r));
+    vec3 skyTop = skyColor(vec3(0.0, 1.0, 0.0));
+    float a = 0.0;
     vec3 col = uHair * skyLight(vec3(0.0, 1.0, 0.0)) * (0.92 + 0.35 * h);
+    if (res < 0.995) {
+      // The velvet: one hair per cell, leaning outward; the average coverage once too fine to draw.
+      vec2 c = floor(p / cell);
+      vec2 j = h22(c);
+      vec2 base = (c + 0.2 + 0.6 * j) * cell;
+      vec2 lean = normalize(base + 1e-3) * (0.55 + 0.5 * j.x) + (j - 0.5) * 0.6;
+      vec2 at = base + lean * uShellH * 0.8;
+      float r = r0 * (1.0 - 0.5 * h);
+      float d = length(p - at);
+      float mask = (1.0 - smoothstep(r - 0.5 * pw, r + 0.5 * pw, d)) * step(h22(c + 7.0).x, 0.88);
+      float cover = 0.88 * 3.14159 * r * r / (cell * cell);
+      float fine = smoothstep(0.35, 1.0, pw / (2.0 * r));
+      mask = mix(mask, cover, fine);
+      a = mask / max(nv, 0.22) + cover * 1.6 * (1.0 - nv) * fine;
+      a *= 1.0 - res;
+    }
+    if (uTop > 0.5 && res > 0.005) {
+      // Traced hairs: the eye's ray against each hair (a tapering glass fibre) in the cells round
+      // where it crosses the hair layer. The blade is taken as flat under them.
+      vec3 rd = normalize(vWorld - cameraPosition);
+      vec3 foot0 = vWorld - N * uShellH;
+      vec2 c0 = floor(p / cell);
+      float hm = 0.0;
+      for (int y = -1; y <= 1; y++) for (int x = -1; x <= 1; x++) {
+        vec2 cc = c0 + vec2(float(x), float(y));
+        if (h22(cc + 7.0).x > 0.88) continue;
+        vec2 j = h22(cc);
+        vec2 base = (cc + 0.2 + 0.6 * j) * cell;
+        vec2 lean = normalize(base + 1e-3) * (0.55 + 0.5 * j.x) + (j - 0.5) * 0.6;
+        vec2 db = base - p;
+        vec3 A = foot0 + vec3(db.x, -(N.x * db.x + N.z * db.y) / max(N.y, 0.2), db.y);
+        vec3 Bh = A + N * uHairLen + vec3(lean.x, 0.0, lean.y) * uHairLen * 0.8;
+        vec3 ba = Bh - A, oa = cameraPosition - A;
+        float baba = dot(ba, ba), bard = dot(ba, rd), baoa = dot(ba, oa), rdoa = dot(rd, oa);
+        float sh = clamp((baoa - bard * rdoa) / max(baba - bard * bard, 1e-6), 0.0, 1.0);
+        float th = max(bard * sh - rdoa, 0.0);
+        float dd = length(oa + rd * th - ba * sh);
+        float lp = max(th, 0.01) * pw / max(length(vWorld - cameraPosition), 0.01);
+        float rr = r0 * (1.0 - 0.6 * sh);
+        float core = 1.0 - smoothstep(rr - lp * 0.5, rr + lp * 0.5, dd);
+        // A glass fibre: its edges brighter than its middle, and fading out toward its fine tip.
+        float edge = smoothstep(rr * 0.15, rr * 0.9, dd);
+        hm = max(hm, core * (0.35 + 0.65 * edge) * (1.0 - 0.55 * sh * sh));
+      }
+      a = mix(a, hm * 0.7, res);
+      col = mix(col, skyTop * 1.15 + uSun * 0.12, res);
+    }
     col += uSun * pow(max(dot(normalize(uGlowDir + V), N), 0.0), 8.0) * 0.25 * uExpo;
     float dist = length(vWorld - cameraPosition);
     col = mix(col, uHaze, 1.0 - exp(-dist * uHazeK));
@@ -485,12 +562,13 @@ const beadFragment = /* glsl */ `
   varying float vR;
   varying vec4 vBead;
 
-  // The salt field of the tear still mixing with the dew: slow curling layers.
+  // The salt field of the tear still mixing with the dew: broad, slow, curling layers. Only its low
+  // frequencies are kept: schlieren are seen as a wavering of what lies behind, not as lines.
   float salt(vec3 q, float t) {
-    float a = t * 0.3 + q.y * 2.2 + length(q.xz) * 1.5;
+    float a = t * 0.22 + q.y * 1.6 + length(q.xz) * 1.1;
     q.xz = mat2(cos(a), -sin(a), sin(a), cos(a)) * q.xz;
-    q += 0.25 * vec3(vn3(q * 2.0 + t * 0.1), vn3(q * 2.0 + 4.0), vn3(q * 2.0 - t * 0.1));
-    return vn3(q * vec3(5.0, 9.0, 5.0)) * 0.7 + vn3(q * 12.0 + vec3(0.0, t * 0.2, 0.0)) * 0.3;
+    q += 0.3 * vec3(vn3(q * 1.3 + t * 0.07), vn3(q * 1.3 + 4.0), vn3(q * 1.3 - t * 0.07));
+    return vn3(q * vec3(2.2, 3.6, 2.2) + vec3(0.0, t * 0.05, 0.0));
   }
 
   vec3 behind(vec3 P2, vec3 T2, float pw) {
@@ -555,16 +633,16 @@ const beadFragment = /* glsl */ `
 
     vec3 T1 = refract(rd, N1, 1.0 / 1.333);
     float tear = 1.0 - step(0.5, vBead.y);
-    vec3 streak = vec3(0.0);
     float lum = 0.0;
     if (tear > 0.5 && uSchlieren > 0.0) {
+      // The salt layers bend the light a little (salt water's index is higher): a smooth warp of
+      // everything seen through the bead, and a soft +-2% in brightness where they are steepest.
       vec3 qm = (P + T1 * vR - vC) / vR;
+      const float e = 0.09;
       float s0 = salt(qm, uTime);
-      vec3 g = vec3(salt(qm + vec3(0.025, 0, 0), uTime), salt(qm + vec3(0, 0.025, 0), uTime), salt(qm + vec3(0, 0, 0.025), uTime)) - s0;
-      T1 = normalize(T1 + uSchlieren * g * 0.32);
-      // Thin streaks where the salt layers are steepest, a touch brighter.
-      float band = abs(fract(s0 * 7.0) - 0.5);
-      lum = uSchlieren * (0.05 * (1.0 - smoothstep(0.0, 0.06, band)) + 0.25 * length(g) - 0.012);
+      vec3 g = (vec3(salt(qm + vec3(e, 0, 0), uTime), salt(qm + vec3(0, e, 0), uTime), salt(qm + vec3(0, 0, e), uTime)) - s0) / e;
+      T1 = normalize(T1 + uSchlieren * g * 0.075);
+      lum = uSchlieren * 0.04 * (smoothstep(0.2, 1.6, length(g)) - 0.5);
     }
     float L = -2.0 * dot(T1, N1) * vR;
     vec3 P2 = P + T1 * L;
@@ -583,28 +661,52 @@ const beadFragment = /* glsl */ `
       float toBlade = step(0.02, -T2g.y) * (1.0 - step(1.5, vBead.y));
       thru += vec3(dr.r, 0.0, db.b) * (1.0 - toBlade);
     }
-    // A speck of dust drifting in the tear bead.
+    // A mote drifting in the tear bead, off to one side: a speck of pollen-dust lit from the glow,
+    // translucent, brighter on its glow side.
     if (tear > 0.5 && uDust > 0.0) {
-      vec3 sp = vC + vR * vec3(0.32 * sin(uTime * 0.11 + 1.0), 0.25 + 0.1 * sin(uTime * 0.07), 0.28 * cos(uTime * 0.09));
+      vec3 sp = vC + vR * vec3(-0.48 + 0.08 * sin(uTime * 0.11 + 1.0), 0.18 + 0.06 * sin(uTime * 0.07), 0.12 + 0.1 * cos(uTime * 0.09));
       vec3 w = sp - P;
       float tt = clamp(dot(w, T1), 0.0, L);
-      float dd = length(P + T1 * tt - sp);
-      thru *= 1.0 - 0.55 * uDust * (1.0 - smoothstep(0.022, 0.034, dd));
+      vec3 off = P + T1 * tt - sp;
+      float dd = length(off);
+      const float mr = 0.045;
+      float body = 1.0 - smoothstep(mr * 0.75, mr * 1.05, dd);
+      float lit = 0.6 + 0.4 * dot(normalize(off + 1e-6), glowL());
+      vec3 mote = (skyLight(vec3(0.0, 1.0, 0.0)) * 0.9 + uLightGlow * 1.6) * vec3(1.0, 0.94, 0.84) * lit;
+      thru = mix(thru, mote, body * 0.6 * uDust);
     }
     thru *= (1.0 + lum) * mix(vec3(1.0), uWaterTint, clamp(L / (2.0 * vR), 0.0, 1.0));
-    // Near its edge a drop bends in light from low down and far away: a darker band inside the rim.
+    // Toward its edge a bead held up on hairs turns to quicksilver: rays that reach its underside
+    // at a slant are turned back by the film of air the hairs hold under it, and show the sky.
     float rr = dc / vR;
-    thru *= 1.0 - 0.28 * smoothstep(0.62, 0.9, rr) * (1.0 - smoothstep(0.93, 1.0, rr));
+    // Inside the rim a drop shows the dark, low world bent up into it: a deeper band, which gives
+    // the bead its depth...
+    thru *= 1.0 - 0.3 * smoothstep(0.5, 0.82, rr) * (1.0 - smoothstep(0.86, 0.95, rr));
+    // ...and at the very edge, a bead held up on hairs turns to quicksilver: rays that reach its
+    // underside at a slant are turned back by the film of air the hairs hold under it.
+    vec2 gxz = normalize(uGlowDir.xz);
+    float away = dot(normalize(N1.xz + 1e-5), -gxz) * 0.5 + 0.5;
+    float qs = smoothstep(0.84, 0.94, rr) * (1.0 - smoothstep(0.975, 1.0, rr)) * (vBead.y < 1.5 ? 1.0 : 0.6) * (0.55 + 0.45 * away);
+    vec3 silver = skyColor(normalize(vec3(-N1.x * 0.6, 1.0, -N1.z * 0.6))) * 1.3 + uSun * 0.15;
+    thru = mix(thru, silver, qs * 0.7);
+    // The glow, gathered by the bead as by a lens, lands inside it on the side away from the glow:
+    // a warm, bright crescent (the second highlight every dewdrop has).
+    float cres = smoothstep(0.45, 0.78, rr) * (1.0 - smoothstep(0.8, 0.93, rr)) * pow(away, 6.0);
+    thru += uLightGlow * vec3(1.15, 1.0, 0.85) * cres * 1.6 * (vBead.y < 1.5 ? 1.0 : 0.7) * uExpo;
     // Reflection: Fresnel, a little stronger than clean water's 2% so the skin reads as a mirror of
     // sky; stronger still when we are pressed against it, and brighter at a ting.
     float F0 = mix(0.03, mix(0.12, 0.24, uSkin), uMirror * tear) * (1.0 + 0.2 * vBead.z);
     float F = F0 + (1.0 - F0) * pow(1.0 - cosi, 5.0);
     vec3 Rr = reflect(rd, N1);
     vec3 refl = envColor(P - uB, Rr);
-    // The brightest part of the dawn is broad: give the beads a soft, clear highlight of it.
+    // The brightest part of the dawn, the sky just above the glow: a crisp highlight that makes
+    // every bead the brightest thing round it, with a soft bloom of the glow about it.
     float hs = max(dot(Rr, uGlowDir), 0.0);
+    vec3 W = normalize(uGlowDir + vec3(0.0, 0.42, 0.0));
+    float hw = max(dot(Rr, W), 0.0);
     refl += uSun * (pow(hs, 70.0) * 9.0 + pow(hs, 700.0) * 30.0);
     col = mix(thru, refl, F);
+    col += uSun * (smoothstep(0.9965, 0.9985, hw) * 2.6 + pow(hw, 260.0) * 0.5) * uExpo;
     // Rim light where the bead turns away: the bright sky bends round the edge.
     col += skyColor(vec3(0.0, 1.0, 0.0)) * pow(1.0 - cosi, 3.0) * 0.32 * (1.0 + vBead.z);
     float dist = length(P - cameraPosition);
@@ -630,13 +732,15 @@ const meshVertex = /* glsl */ `
 `;
 
 // Worn brass mirroring the same dawn sky. tMap: r = engraved letters, g = scratches and wear.
+// Old brass is not yellow paint: a pale gold mirror where hands have polished it, and a dark olive
+// patina in the letters, the seat of the glass and the underside, where nothing has rubbed it.
 const brassFragment = /* glsl */ `
   ${NOISE}
   ${SKY}
   ${CHILD}
   uniform sampler2D tMap;
   uniform float uUseMap, uRough, uGlint, uGlintAng;
-  uniform vec3 uBrass, uGlintCol;
+  uniform vec3 uBrass, uPatina, uGlintCol;
   varying vec3 vWorld, vN, vObj;
   varying vec2 vUv;
   void main() {
@@ -646,33 +750,62 @@ const brassFragment = /* glsl */ `
     vec4 m = uUseMap > 0.5 ? texture2D(tMap, vUv) : vec4(0.0, 0.35, 0.0, 0.0);
     float letters = m.r;
     float scratch = m.g;
-    float rough = clamp(uRough + 0.3 * letters - 0.18 * scratch + 0.06 * (vn2(vObj.xz * 0.7) - 0.5), 0.05, 1.0);
+    // Where it is recessed: the glass's seat (the inner wall), the underside, the engraving.
+    float rad = uUseMap > 0.5 ? length(vObj.xy) : length(vObj.xz);
+    float ht = uUseMap > 0.5 ? 1.7 : vObj.y;
+    float recess = (1.0 - smoothstep(15.25, 15.9, rad)) * 0.85 + (1.0 - smoothstep(-2.4, 0.2, ht)) * 0.55;
+    float mottle = vn2(vObj.xz * 0.55 + vObj.y * 0.3) * 0.6 + vn2(vObj.xz * 2.1) * 0.4;
+    float patina = clamp(letters * 1.1 + recess * 0.7 + (mottle - 0.55) * 0.45 - scratch * 0.7, 0.0, 1.0);
+    float rough = clamp(uRough + 0.45 * patina - 0.2 * scratch, 0.06, 1.0);
     vec3 R = reflect(-V, N);
-    vec3 env = mix(min(skyColor(R), vec3(4.0)) * uExpo * 1.5, skyLight(N) * 1.05, rough);
-    env += uSun * pow(max(dot(R, glowL()), 0.0), 12.0) * 0.8 * uExpo;
     float nv = clamp(dot(N, V), 0.0, 1.0);
     vec3 F = mix(uBrass, vec3(1.0), pow(1.0 - nv, 5.0));
-    vec3 col = env * F;
-    // Engraved letters hold dark old polish; polished wear catches more sky.
-    col *= 1.0 - 0.5 * letters;
-    col *= 1.0 + 0.22 * scratch;
-    // The engraving glints as the glass settles: a sweep of light along the letters.
+    // Polished: a sharp mirror of the sky; rough: the sky's light spread out.
+    vec3 spec = mix(min(skyColor(R), vec3(6.0)) * uExpo * 1.3, skyLight(N) * 0.95, rough);
+    // The glow's crisp highlight on the polished edges.
+    float g = max(dot(R, glowL()), 0.0);
+    spec += uSun * (pow(g, 300.0) * 6.0 + pow(g, 40.0) * 0.5) * (1.0 - rough) * uExpo;
+    vec3 col = spec * F;
+    // Patina: dark, olive-brown, matte.
+    vec3 dark = uPatina * (skyLight(N) * 0.75 + 0.05);
+    col = mix(col, dark, patina * 0.75);
+    // The engraving glints as the glass settles: a sweep of light along the letters' edges.
     float ang = atan(vUv.y - 0.5, vUv.x - 0.5);
     float sweep = exp(-pow((mod(ang - uGlintAng + PI, TAU) - PI) / 0.22, 2.0));
-    col += uGlintCol * letters * sweep * uGlint;
+    col += uGlintCol * letters * (1.0 - letters * 0.5) * sweep * uGlint;
     gl_FragColor = vec4(col, 1.0);
   }
 `;
 
-// A child's fingertips: warm skin, light through the thin edges (the same warm glow the cell holds
-// inside it), short bitten nails, a paper plaster, a smudge of ink.
+// A child's fingers: warm skin; light from the low glow passing through the thin edges and coming
+// out warm red on the far side (the same warm glow the cell holds inside it); creases at the
+// knuckles, a cuticle at each short bitten nail, a paper plaster, a smudge of ink. vL is the
+// position in the loupe's own space, where the joints and the ink are placed.
+const skinVertex = /* glsl */ `
+  uniform mat4 uLoupeInv;
+  varying vec3 vWorld, vN, vObj, vL;
+  varying vec2 vUv;
+  void main() {
+    vec4 wp = modelMatrix * vec4(position, 1.0);
+    vWorld = wp.xyz;
+    vObj = position;
+    vL = (uLoupeInv * wp).xyz;
+    vUv = uv;
+    vN = normalize(transpose(inverse(mat3(modelMatrix))) * normal);
+    gl_Position = projectionMatrix * viewMatrix * wp;
+  }
+`;
+
 const skinFragment = /* glsl */ `
   ${NOISE}
   ${SKY}
   uniform vec3 uSkin, uGlowSkin, uInkCol;
   uniform vec4 uInk;
+  uniform vec4 uJoints[4];
+  uniform vec3 uJointAx[4];
   uniform float uKind; // 0 skin, 1 nail, 2 plaster
-  varying vec3 vWorld, vN, vObj;
+  uniform float uThick; // the finger's radius (mm), for the light through it
+  varying vec3 vWorld, vN, vObj, vL;
   varying vec2 vUv;
   void main() {
     vec3 N = normalize(vN);
@@ -680,24 +813,49 @@ const skinFragment = /* glsl */ `
     float nv = clamp(dot(N, V), 0.0, 1.0);
     vec3 alb = uSkin;
     if (uKind < 0.5) {
-      alb *= 0.97 + 0.06 * vn2(vObj.xz * 1.3 + vObj.y);
-      float ink = (1.0 - smoothstep(uInk.w * 0.5, uInk.w, length(vObj - uInk.xyz))) * (0.6 + 0.4 * vn2(vObj.xy * 3.0));
-      alb = mix(alb, uInkCol, ink * 0.75);
+      alb *= 0.96 + 0.07 * vn2(vL.xz * 0.9 + vL.y * 0.5);
+      // Knuckle creases: a few soft folds across the back of each joint (shading, not lines).
+      for (int i = 0; i < 4; i++) {
+        vec3 d = vL - uJoints[i].xyz;
+        float along = dot(d, uJointAx[i]);
+        float near = exp(-dot(d, d) / (uJoints[i].w * uJoints[i].w * 2.2));
+        float folds = 0.5 + 0.5 * cos(along * 5.2);
+        alb *= 1.0 - 0.13 * near * folds * exp(-along * along / 3.0);
+      }
+      // A smudge of violet ink, as from a fountain pen.
+      vec3 dI = vL - uInk.xyz;
+      dI.z *= 0.45; // smeared along the finger
+      float ragged = vn2(vL.xz * 1.1 + 3.0) * 0.6 + vn2(vL.xz * 3.3) * 0.4;
+      float ink = (1.0 - smoothstep(uInk.w * 0.25, uInk.w, length(dI) + (ragged - 0.5) * uInk.w * 0.9)) * (0.45 + 0.55 * ragged);
+      alb = mix(alb, uInkCol, ink * 0.55);
     } else if (uKind > 1.5) {
-      // Plaster: woven paper with a row of tiny breathing holes.
-      float holes = smoothstep(0.35, 0.2, length(fract(vUv * vec2(18.0, 5.0)) - 0.5));
-      alb *= 1.0 - 0.06 * holes - 0.03 * vn2(vUv * 60.0);
+      // Plaster: woven fabric, a row of tiny breathing holes, its gauze pad paler.
+      float holes = smoothstep(0.32, 0.18, length(fract(vUv * vec2(22.0, 6.0)) - 0.5));
+      alb *= 1.0 - 0.1 * holes - 0.05 * vn2(vUv * 90.0);
     }
+    vec3 L = glowL();
+    float nl = dot(N, L);
     vec3 E = skyLight(N);
     vec3 col = alb * E;
-    // Skin scatters light under itself: the shaded side stays warm instead of going grey.
-    col += alb * vec3(0.1, 0.035, 0.02) * (1.0 - clamp(dot(N, glowL()) * 0.5 + 0.5, 0.0, 1.0)) * uExpo;
-    // Light through the thin edges, warm.
-    col += uGlowSkin * pow(1.0 - nv, 3.0) * (uKind > 1.5 ? 0.06 : 0.14) * uExpo;
+    if (uKind < 1.5) {
+      // Skin scatters light under itself: the shaded side stays warm instead of going grey.
+      col += alb * vec3(0.12, 0.04, 0.025) * (1.0 - clamp(nl * 0.5 + 0.5, 0.0, 1.0)) * uExpo;
+      // Light through the finger from the glow: on the far side, where the chord through the finger
+      // along the light is short, it comes out red-orange (red travels furthest in skin).
+      float chord = 2.0 * uThick * max(-nl, 0.0) + 0.35;
+      vec3 trans = exp(-chord / vec3(3.2, 1.15, 0.6));
+      float far = smoothstep(0.05, -0.25, nl);
+      col += uGlowSkin * trans * far * (0.55 + 0.45 * (1.0 - nv)) * 1.6 * uExpo;
+      // The lit rim on the glow side.
+      col += uLightGlow * vec3(1.0, 0.9, 0.8) * pow(1.0 - nv, 3.0) * smoothstep(-0.1, 0.4, nl) * 0.7 * uExpo;
+    } else {
+      col += uGlowSkin * pow(1.0 - nv, 3.0) * 0.05 * uExpo;
+    }
     if (uKind > 0.5 && uKind < 1.5) {
-      // Nail: a pale, short free edge (bitten) and a soft sheen.
-      col = mix(col, skyLight(N) * vec3(0.9, 0.86, 0.85), smoothstep(0.55, 0.85, vObj.z) * 0.3);
-      col += min(skyColor(reflect(-V, N)), vec3(1.5)) * 0.06;
+      // Nail: a pale, short free edge (bitten), a pink cuticle at its base, and a soft sheen.
+      col = mix(col, skyLight(N) * vec3(0.92, 0.88, 0.86), smoothstep(0.55, 0.85, vObj.z) * 0.35);
+      col = mix(col, col * vec3(1.0, 0.82, 0.8), smoothstep(-0.55, -0.85, vObj.z) * 0.6);
+      col += min(skyColor(reflect(-V, N)), vec3(1.5)) * 0.08;
     }
     gl_FragColor = vec4(col, 1.0);
   }
@@ -1080,13 +1238,15 @@ export class Garden {
       uGround: { value: c(DAWN.ground) },
       uSun: { value: c(DAWN.sun) },
       uGlowDir: { value: GLOW_DIR.clone() },
-      uLightUp: { value: new THREE.Color(0.8, 0.79, 0.9) },
-      uLightDown: { value: new THREE.Color(0.34, 0.36, 0.33) },
-      uLightGlow: { value: new THREE.Color(0.36, 0.26, 0.16) },
+      // A clear dawn: a lilac dome for fill and the warm glow low in the east as a real key, so the
+      // pleats facing it are bright and those turned away go cool and deep.
+      uLightUp: { value: new THREE.Color(0.7, 0.7, 0.86) },
+      uLightDown: { value: new THREE.Color(0.26, 0.27, 0.3) },
+      uLightGlow: { value: new THREE.Color(0.58, 0.45, 0.3) },
       uSkyOcc: { value: 0 },
       uExpo: { value: 1 },
       uHaze: { value: c(DAWN.haze) },
-      uHazeK: { value: 0.0007 },
+      uHazeK: { value: 0.00022 },
       uTime: { value: 0 },
       // The child, relative to the tear bead: head over it, shoulders back toward the step, an arm
       // reaching down to the glass.
@@ -1110,11 +1270,13 @@ export class Garden {
       uSinus: { value: LEAF.sinus },
       uTooth: { value: LEAF.tooth },
       uTeeth: { value: LEAF.teeth },
-      uLeafA: { value: c(0x7ea585) },
-      uLeafB: { value: c(0x9bbb8f) },
-      uVein: { value: c(0xc6d9bd) },
-      uLeafEdge: { value: c(0xc2cf9c) },
-      uLeafDeep: { value: c(0x6f9283) },
+      uBend: { value: LEAF.bend },
+      uBendPhase: { value: LEAF.phase },
+      uLeafA: { value: c(0x78ad8c) },
+      uLeafB: { value: c(0x9fc99a) },
+      uVein: { value: c(0xd4e8cc) },
+      uLeafEdge: { value: c(0xd0dc9e) },
+      uLeafDeep: { value: c(0x4f8577) },
     };
   }
 
@@ -1147,7 +1309,7 @@ export class Garden {
     for (let i = 1; i <= 6; i++) {
       const h = (i / 6) * hairLen;
       const m = new THREE.ShaderMaterial({
-        uniforms: { ...this.u, ...blade, uShell: { value: h }, uShellH: { value: h }, uHairLen: { value: hairLen }, uHair: { value: sceneColor(0xf4f4f8) } },
+        uniforms: { ...this.u, ...blade, uShell: { value: h }, uShellH: { value: h }, uHairLen: { value: hairLen }, uTop: { value: i === 6 ? 1 : 0 }, uHair: { value: sceneColor(0xf4f4f8) } },
         vertexShader: leafVertex,
         fragmentShader: shellFragment,
         transparent: true,
@@ -1243,12 +1405,12 @@ export class Garden {
   buildFar() {
     const rnd = rng(23);
     const far = this.farScene;
-    far.background = sceneColor(0x4f4d5e);
+    far.background = sceneColor(0x2a2638);
     const blade = this.bladeUniforms();
-    blade.uLeafA.value = sceneColor(0x6c8e88);
-    blade.uLeafB.value = sceneColor(0x84a08c);
-    blade.uVein.value = sceneColor(0x96b2a6);
-    blade.uLeafDeep.value = sceneColor(0x5a7078);
+    blade.uLeafA.value = sceneColor(0x5f9274);
+    blade.uLeafB.value = sceneColor(0x86b48a);
+    blade.uVein.value = sceneColor(0xa9cfa9);
+    blade.uLeafDeep.value = sceneColor(0x3f6a64);
     this.farExpo = { value: 0.62 };
     const mat = new THREE.ShaderMaterial({
       uniforms: {
@@ -1273,6 +1435,17 @@ export class Garden {
       alphaToCoverage: true,
     });
     this.farLeafMat = mat;
+    // Three kinds of leaf below, so no two read as copies: younger, fuller, more deeply lobed.
+    const variants = [
+      { ...LEAF, R0: 37, lobes: 9, bend: 0.13, phase: 1.3, cup: 7, pleat: 2.6 },
+      { ...LEAF, R0: 46, lobes: 11, bend: 0.07, phase: 2.6, cup: 9.5, pleat: 3.0, teeth: 8 },
+      { ...LEAF, R0: 32, lobes: 7, bend: 0.1, phase: 4.1, cup: 6, pleat: 2.2, teeth: 10, sinus: -Math.PI / 2 - 0.3 },
+    ].map((L) => {
+      const m = mat.clone();
+      m.uniforms = { ...mat.uniforms, uR0: { value: L.R0 }, uLobes: { value: L.lobes }, uBend: { value: L.bend }, uBendPhase: { value: L.phase }, uTeeth: { value: L.teeth }, uSinus: { value: L.sinus } };
+      return { L, geo: leafGeometry(L, 64, 160), mat: m };
+    });
+    this.farVariants = variants;
     const farBeads = [];
     const spots = [
       [-66, -14, 30, 1.05, 2.1, 0.12],
@@ -1284,17 +1457,19 @@ export class Garden {
       [96, -44, 34, 0.9, 2.8, 0.14],
       [-98, -40, -24, 0.95, -2.6, -0.1],
     ];
-    for (const [x, y, z, s, ry, tilt] of spots) {
-      const m = new THREE.Mesh(this.leafGeo, mat);
+    for (let si = 0; si < spots.length; si++) {
+      const [x, y, z, s, ry, tilt] = spots[si];
+      const V = variants[si % 3];
+      const m = new THREE.Mesh(V.geo, V.mat);
       m.position.set(x, y, z);
       m.rotation.set(tilt, ry, -tilt * 0.6);
       m.scale.setScalar(s);
       far.add(m);
       m.updateMatrixWorld();
       for (let i = 0; i < 4; i++) {
-        const phi = rnd() * TAU, rho = 6 + rnd() * 26, r = 0.6 + rnd() * 1.2;
+        const phi = rnd() * TAU, rho = 6 + rnd() * (V.L.R0 - 14), r = 0.6 + rnd() * 1.2;
         const lx = rho * Math.cos(phi), lz = rho * Math.sin(phi);
-        const p = new THREE.Vector3(lx, leafHeight(lx, lz) + r + 0.6, lz).applyMatrix4(m.matrixWorld);
+        const p = new THREE.Vector3(lx, leafHeight(lx, lz, V.L) + r + 0.6, lz).applyMatrix4(m.matrixWorld);
         farBeads.push({ c: p, r: r * s, kind: 2, leafY: p.y - r });
       }
     }
@@ -1305,7 +1480,7 @@ export class Garden {
     const vert = meshVertex;
     const lit = (c1, c2, noise) =>
       new THREE.ShaderMaterial({ uniforms: { ...this.u, uExpo: this.farExpo, uColor: { value: sceneColor(c1) }, uColor2: { value: sceneColor(c2) }, uNoise: { value: noise } }, vertexShader: vert, fragmentShader: litFragment });
-    const soil = new THREE.Mesh(new THREE.PlaneGeometry(1600, 1600), lit(0x5a5466, 0x6e6577, 0.08));
+    const soil = new THREE.Mesh(new THREE.PlaneGeometry(1600, 1600), lit(0x3a3348, 0x4a4058, 0.08));
     soil.rotation.x = -Math.PI / 2;
     soil.position.y = -78;
     far.add(soil);
@@ -1342,17 +1517,18 @@ export class Garden {
       uRough: { value: rough },
       uGlint: { value: 0 },
       uGlintAng: { value: 0 },
-      uBrass: { value: sceneColor(0xe9c47e) },
+      uBrass: { value: sceneColor(0xe8cf98) },
+      uPatina: { value: sceneColor(0x56523c) },
       uGlintCol: { value: new THREE.Color(3.2, 2.6, 1.9) },
     });
     this.engraveTex = engraving();
-    const brass = new THREE.ShaderMaterial({ uniforms: brassU(false, 0.42), vertexShader: meshVertex, fragmentShader: brassFragment });
+    const brass = new THREE.ShaderMaterial({ uniforms: brassU(false, 0.2), vertexShader: meshVertex, fragmentShader: brassFragment });
     const prof = [
       [15.0, -2.4], [15.5, -2.9], [18.0, -2.9], [18.7, -2.3], [18.9, -1.0], [18.9, 0.8], [18.4, 1.6], [18.2, 1.7], [15.7, 1.7], [15.25, 1.3], [15.0, 0.6],
     ].map(([x, y]) => new THREE.Vector2(x, y));
     const bezel = new THREE.Mesh(new THREE.LatheGeometry(prof, 160), brass);
     group.add(bezel);
-    const faceMat = new THREE.ShaderMaterial({ uniforms: brassU(true, 0.32), vertexShader: meshVertex, fragmentShader: brassFragment });
+    const faceMat = new THREE.ShaderMaterial({ uniforms: brassU(true, 0.16), vertexShader: meshVertex, fragmentShader: brassFragment });
     faceMat.uniforms.tMap.value = this.engraveTex;
     this.faceMat = faceMat;
     const face = new THREE.Mesh(new THREE.RingGeometry(15.7, 18.2, 160, 1), faceMat);
@@ -1370,66 +1546,90 @@ export class Garden {
     lug.rotation.y = 0.35;
     group.add(lug);
 
-    // Fingertips (loupe space: glass centre at the origin, axis +y, the child toward -z).
-    const skinU = (kind, color) => ({
+    // The child's fingers (loupe space: glass centre at the origin, axis +y toward the eye, the child
+    // toward -z, which is the bottom of the frame; +x is the frame's left). The right hand comes in
+    // from the bottom right: the index finger arches over the bezel and rests its pad on the brass
+    // face, a plaster round its last knuckle; the middle finger curls under the rim beside it; the
+    // thumb is hidden under the glass.
+    this.loupeInv = { value: new THREE.Matrix4() };
+    const joints = [new THREE.Vector4(), new THREE.Vector4(), new THREE.Vector4(), new THREE.Vector4()];
+    const jointAx = [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()];
+    const skinU = (kind, color, thick = 5.5) => ({
       ...this.u,
+      uLoupeInv: this.loupeInv,
       uSkin: { value: sceneColor(color) },
-      uGlowSkin: { value: sceneColor(ORGANELLE.jellyGlow, 0.9) },
-      uInkCol: { value: sceneColor(0x6a5fb0) },
+      uGlowSkin: { value: sceneColor(ORGANELLE.jellyGlow, 0.9).lerp(new THREE.Color(1.0, 0.36, 0.2), 0.45) },
+      uInkCol: { value: sceneColor(0x4d3f9a) },
       uInk: { value: new THREE.Vector4(0, 0, 0, 0) },
+      uJoints: { value: joints },
+      uJointAx: { value: jointAx },
       uKind: { value: kind },
+      uThick: { value: thick },
     });
-    const skin = new THREE.ShaderMaterial({ uniforms: skinU(0, 0xd8c3ba), vertexShader: meshVertex, fragmentShader: skinFragment });
-    const inkSkin = new THREE.ShaderMaterial({ uniforms: skinU(0, 0xd6bfb6), vertexShader: meshVertex, fragmentShader: skinFragment });
-    const nail = new THREE.ShaderMaterial({ uniforms: skinU(1, 0xd9c4c0), vertexShader: meshVertex, fragmentShader: skinFragment });
-    const plaster = new THREE.ShaderMaterial({ uniforms: skinU(2, 0xe8d6bf), vertexShader: meshVertex, fragmentShader: skinFragment });
+    const skinMat = (kind, color) => new THREE.ShaderMaterial({ uniforms: skinU(kind, color), vertexShader: skinVertex, fragmentShader: skinFragment });
+    const skin = skinMat(0, 0xe2c4b4);
+    const nail = skinMat(1, 0xe6cbc4);
+    const plaster = skinMat(2, 0xd4a879);
+    const gauze = skinMat(2, 0xf1e9dc);
     const fingers = new THREE.Group();
     group.add(fingers);
     const seg = (a, b, r0, r1, mat) => {
       const A = new THREE.Vector3(...a), Bv = new THREE.Vector3(...b);
       const len = A.distanceTo(Bv);
-      const geo = new THREE.CapsuleGeometry(1, 1, 8, 20);
-      // Taper the capsule from r0 at A to r1 at B, its core length len.
+      const geo = new THREE.CapsuleGeometry(1, 1, 10, 24);
+      // Taper the capsule from r0 at A to r1 at B, its core length len; a finger is a little
+      // flatter than round (wider than deep).
       const p = geo.attributes.position;
       for (let i = 0; i < p.count; i++) {
         const y = p.getY(i);
         const t = clamp(y + 0.5, 0, 1);
         const r = r0 + (r1 - r0) * t;
         const yy = y > 0.5 ? len / 2 + (y - 0.5) * r1 : y < -0.5 ? -len / 2 + (y + 0.5) * r0 : y * len;
-        p.setXYZ(i, p.getX(i) * r, yy, p.getZ(i) * r);
+        p.setXYZ(i, p.getX(i) * r * 1.06, yy, p.getZ(i) * r * 0.92);
       }
       geo.computeVertexNormals();
       const m = new THREE.Mesh(geo, mat);
       m.position.copy(A).add(Bv).multiplyScalar(0.5);
-      m.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), Bv.clone().sub(A).normalize());
+      // Keep the finger's flat side facing up (toward the eye).
+      const ax = Bv.clone().sub(A).normalize();
+      const up = new THREE.Vector3(0, 1, 0).addScaledVector(ax, -ax.y).normalize();
+      const side = new THREE.Vector3().crossVectors(ax, up).normalize();
+      m.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(side, ax, new THREE.Vector3().crossVectors(side, ax)));
       fingers.add(m);
       return m;
     };
-    // The child's right hand comes in from the near right (-x, -z in loupe space; screen bottom
-    // right from the eye). The index finger lies across the bezel with its pad on the brass, a plaster
-    // round its middle joint; the middle finger curls under the rim beside it; the thumb is hidden
-    // beneath the glass.
-    const chain = (pts, radii, mats) => {
+    const chain = (pts, radii, mat) => {
       const out = [];
-      for (let i = 0; i < pts.length - 1; i++) out.push(seg(pts[i], pts[i + 1], radii[i], radii[i + 1], mats[i] ?? mats[0]));
+      for (let i = 0; i < pts.length - 1; i++) out.push(seg(pts[i], pts[i + 1], radii[i], radii[i + 1], mat));
       return out;
     };
-    const idx = [[-17, -16, -76], [-11, -1.5, -50], [-7.5, 5.0, -32], [-4.5, 6.9, -20.5]];
-    const idxSegs = chain(idx, [6.4, 6.0, 5.6, 5.1], [skin]);
-    const mdl = [[-36, -26, -70], [-28.5, -14, -46], [-23, -7.5, -30], [-19.5, -4.2, -19]];
-    chain(mdl, [6.7, 6.3, 5.8, 5.3], [inkSkin]);
-    const mid = idxSegs[2];
-    // Plaster round the last knuckle of the index finger.
-    const band = new THREE.Mesh(new THREE.CylinderGeometry(6.0, 6.05, 8, 40, 1, true), plaster);
-    band.position.set(...idx[2]);
-    band.quaternion.copy(mid.quaternion);
+    // Index: knuckle (out of frame), arching up over the middle joint, down onto the face.
+    const idx = [[-33, 6, -66], [-24.5, 12.5, -42], [-16.5, 10.5, -27], [-11.2, 6.4, -16.2]];
+    chain(idx, [6.6, 6.2, 5.7, 5.2], skin);
+    // Middle: lower, curling in under the rim beside the index.
+    const mdl = [[-50, -8, -58], [-38, -4.5, -37], [-29, -6, -23.5], [-22.5, -4.2, -13]];
+    chain(mdl, [6.9, 6.5, 6.0, 5.4], skin);
+    // The ring finger's knuckle, just in at the frame's corner: the hand goes on beyond.
+    chain([[-66, -14, -62], [-55, -11, -44]], [6.8, 6.3], skin);
+    // Joints for the creases: index PIP and DIP, middle PIP and DIP.
+    [[idx, 1], [idx, 2], [mdl, 1], [mdl, 2]].forEach(([c, i], k) => {
+      joints[k].set(c[i][0], c[i][1], c[i][2], 5.8);
+      jointAx[k].set(c[i + 1][0] - c[i - 1][0], c[i + 1][1] - c[i - 1][1], c[i + 1][2] - c[i - 1][2]).normalize();
+    });
+    // Plaster round the index's middle phalanx, its pad on the back of the finger.
+    const A2 = new THREE.Vector3(...idx[1]), B2 = new THREE.Vector3(...idx[2]);
+    const ax2 = B2.clone().sub(A2).normalize();
+    const up2 = new THREE.Vector3(0, 1, 0).addScaledVector(ax2, -ax2.y).normalize();
+    const band = new THREE.Mesh(new THREE.CylinderGeometry(6.2, 6.25, 9, 48, 1, true), plaster);
+    band.position.lerpVectors(A2, B2, 0.55);
+    band.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), ax2);
+    band.scale.set(1.06, 1, 0.92);
+    band.quaternion.multiply(new THREE.Quaternion());
     fingers.add(band);
-    const axis = new THREE.Vector3(0, 1, 0).applyQuaternion(mid.quaternion);
-    const top = new THREE.Vector3(0, 1, 0).addScaledVector(axis, -axis.y).normalize();
-    const pad = new THREE.Mesh(new THREE.SphereGeometry(1, 24, 12), plaster);
-    pad.scale.set(3.6, 0.8, 3.3);
-    pad.position.copy(band.position).addScaledVector(top, 5.85);
-    pad.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), top);
+    const pad = new THREE.Mesh(new THREE.SphereGeometry(1, 24, 12), gauze);
+    pad.scale.set(3.4, 0.55, 3.0);
+    pad.position.copy(band.position).addScaledVector(up2, 5.85);
+    pad.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), up2);
     fingers.add(pad);
     // Short, bitten nails on the fingertips, lying on the top of each last joint.
     const nailOn = (a, b, r, size) => {
@@ -1437,14 +1637,15 @@ export class Garden {
       const ax = Bv.clone().sub(A).normalize();
       const up = new THREE.Vector3(0, 1, 0).addScaledVector(ax, -ax.y).normalize();
       const n = new THREE.Mesh(new THREE.SphereGeometry(1, 24, 12), nail);
-      n.scale.set(size * 0.72, 0.32, size * 1.05);
-      n.position.copy(Bv).addScaledVector(ax, -size * 0.45).addScaledVector(up, r * 0.97);
+      n.scale.set(size * 0.74, 0.34, size * 1.0);
+      n.position.copy(Bv).addScaledVector(ax, -size * 0.35).addScaledVector(up, r * 0.86);
       n.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(new THREE.Vector3().crossVectors(up, ax), up, ax));
       fingers.add(n);
     };
-    nailOn(idx[2], idx[3], 5.2, 3.6);
-    nailOn(mdl[2], mdl[3], 5.4, 3.7);
-    inkSkin.uniforms.uInk.value.set(-31, -9, -40, 6);
+    nailOn(idx[2], idx[3], 5.2, 3.9);
+    nailOn(mdl[2], mdl[3], 5.4, 4.0);
+    // The ink, on the back of the middle finger's middle phalanx, where it shows.
+    skin.uniforms.uInk.value.set(-33, 1.2, -30, 3.6);
     this.fingers = fingers;
     for (const o of group.children) o.renderOrder = 2;
   }
@@ -1494,17 +1695,18 @@ export class Garden {
   // Where the loupe sits and which way it faces: toward the eye, tilted 8 degrees toward the child.
   placeLoupe() {
     const g = this.loupe;
-    const n = this.camera.position.clone().sub(this.loupePos).normalize();
-    n.z -= Math.tan(THREE.MathUtils.degToRad(8));
+    const n = _n.copy(this.camera.position).sub(this.loupePos).normalize();
+    n.z -= TILT8;
     n.normalize();
-    const x = new THREE.Vector3().crossVectors(n, new THREE.Vector3(0, 0, 1)).normalize();
-    const z = new THREE.Vector3().crossVectors(x, n);
+    const x = _x.crossVectors(n, _Z).normalize();
+    const z = _z.crossVectors(x, n);
     g.matrix.makeBasis(x, n, z).setPosition(this.loupePos);
     g.matrix.decompose(g.position, g.quaternion, g.scale);
     g.updateMatrixWorld(true);
+    this.loupeInv.value.copy(g.matrixWorld).invert();
     // The glass sits in the bezel's seat; the disc in the mid layer copies its pose.
     this.disc.position.copy(this.loupePos).addScaledVector(n, -0.4);
-    this.disc.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(x, z.clone().negate(), n));
+    this.disc.quaternion.setFromRotationMatrix(_m4.makeBasis(x, _y.copy(z).negate(), n));
   }
 
   // Thin-lens optics of the loupe seen from the eye (story §6.3, shot 4). H: eye above the bead
@@ -1535,7 +1737,7 @@ export class Garden {
     o.flip = o.M < 0;
     // The disc on screen: centre and radius in drawing-buffer pixels.
     const cam = this.camera;
-    const c = this.loupePos.clone().project(cam);
+    const c = _p.copy(this.loupePos).project(cam);
     o.discC.set((c.x * 0.5 + 0.5) * this.size.x, (c.y * 0.5 + 0.5) * this.size.y);
     const dist = Math.max(cam.position.distanceTo(this.loupePos), 0.01);
     const ang = Math.atan(LOUPE.R / dist);
@@ -1545,8 +1747,9 @@ export class Garden {
   }
 
   // Screen position (drawing-buffer px) of a world point through the main camera.
-  toScreen(p, out = new THREE.Vector2()) {
-    const v = p.clone().project(this.camera);
+  // Screen position (drawing-buffer px) of a world point through the main camera. Allocates nothing.
+  toScreen(p, out = _s2) {
+    const v = _p.copy(p).project(this.camera);
     return out.set((v.x * 0.5 + 0.5) * this.size.x, (v.y * 0.5 + 0.5) * this.size.y);
   }
 
@@ -1554,22 +1757,20 @@ export class Garden {
   beadCentred(i) {
     const o = this.optics;
     const s = this.toScreen(this.beads[i].c);
-    const off = s.sub(o.discC).multiplyScalar(Math.abs(o.M));
-    return off.length() <= 0.15 * o.discR;
+    return s.distanceTo(o.discC) * Math.abs(o.M) <= 0.15 * o.discR;
   }
 
   // The bead nearest the glass's axis (in the magnified view), or -1.
   beadInGlass() {
     const o = this.optics;
     let best = -1, bd = Infinity;
-    this.beads.forEach((b, i) => {
-      const s = this.toScreen(b.c);
-      const dd = s.distanceTo(o.discC) * Math.abs(o.M);
+    for (let i = 0; i < this.beads.length; i++) {
+      const dd = this.toScreen(this.beads[i].c).distanceTo(o.discC) * Math.abs(o.M);
       if (dd < bd && dd < o.discR) {
         bd = dd;
         best = i;
       }
-    });
+    }
     return best;
   }
 
@@ -1585,7 +1786,7 @@ export class Garden {
     u.uTime.value = this.time;
     u.uSkyOcc.value = this.skyOcc;
     u.uExpo.value = this.expo;
-    this.farExpo.value = this.expo * 0.6;
+    this.farExpo.value = this.expo * 0.5;
     const cam = this.camera;
     const focus = Math.max(this.focus, 0.05);
     cam.near = clamp(0.05 * focus, 0.02, 2);
@@ -1664,7 +1865,7 @@ export class Garden {
       gu.uC.value.copy(o.discC);
 
       // Near layer: brass and fingers, blurred by their circle of confusion.
-      const cc = renderer.getClearColor(new THREE.Color()), ca = renderer.getClearAlpha();
+      const cc = renderer.getClearColor(_col), ca = renderer.getClearAlpha();
       renderer.setClearColor(0x000000, 0);
       renderer.setRenderTarget(this.nearTarget);
       renderer.render(this.nearScene, cam);
@@ -1694,3 +1895,14 @@ export class Garden {
     this.pass.dispose();
   }
 }
+
+const TILT8 = Math.tan(THREE.MathUtils.degToRad(8));
+const _Z = new THREE.Vector3(0, 0, 1);
+const _n = new THREE.Vector3();
+const _x = new THREE.Vector3();
+const _y = new THREE.Vector3();
+const _z = new THREE.Vector3();
+const _p = new THREE.Vector3();
+const _m4 = new THREE.Matrix4();
+const _s2 = new THREE.Vector2();
+const _col = new THREE.Color();
