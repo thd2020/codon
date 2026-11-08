@@ -10,6 +10,9 @@ import * as THREE from 'three';
 const Z = new THREE.Vector3(0, 0, 1);
 const UP = new THREE.Vector3(0, 1, 0);
 const AIM_LIFT = Math.tan(THREE.MathUtils.degToRad(14));
+// How much higher still the camera rides while the cell's tail points back at the lens, as the angle
+// the cell then sits below the middle of the view.
+const CHASE_RISE = Math.tan(THREE.MathUtils.degToRad(7));
 
 export class Player {
   constructor(cell, camera, controls) {
@@ -27,6 +30,7 @@ export class Player {
     this.tumbleAxis = new THREE.Vector3(1, 0, 0);
     this.spinRate = 0;
     this.idle = 0;
+    this.rise = 0; // 0..1: how far the camera has risen over a cell whose tail points at it
     this.started = false;
     this.inspect = false;
 
@@ -116,10 +120,21 @@ export class Player {
     };
   }
 
-  // Keep the orbit camera on the cell, trailing a little.
+  // Keep the orbit camera on the cell, trailing a little. While the cell's tail points back at the
+  // lens (swimming away from the camera, or resting after), the camera also rides a little higher,
+  // so the cell sits a little below the middle of the view and its trailing flagella fall away below
+  // the line of sight instead of streaming at the lens. Camera and target move together, so the
+  // view's direction, and with it the steering, stays as it was.
   follow(dt) {
     const target = this.controls.target;
-    _v.copy(this.cell.group.position).sub(target).multiplyScalar(1 - Math.exp(-dt / 0.15));
+    const g = this.cell.group;
+    this.camera.getWorldDirection(_f);
+    _r.crossVectors(_f, UP).normalize();
+    _u.crossVectors(_r, _f).normalize();
+    const away = THREE.MathUtils.smoothstep(_a.copy(Z).applyQuaternion(g.quaternion).dot(_f), 0.86, 0.96);
+    this.rise += (away - this.rise) * (1 - Math.exp(-dt / 0.6));
+    const lift = this.rise * CHASE_RISE * this.camera.position.distanceTo(target);
+    _v.copy(g.position).addScaledVector(_u, lift).sub(target).multiplyScalar(1 - Math.exp(-dt / 0.15));
     target.add(_v);
     this.camera.position.add(_v);
   }

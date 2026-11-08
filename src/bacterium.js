@@ -582,7 +582,9 @@ class Flagellum {
     this.length = length;
     this.pivot = new THREE.Group();
     parent.add(this.pivot);
-    this.material = cellMaterial({ color: ORGANELLE.flagellum, bend: true, glow: 0.3, translucency: 0.7 });
+    // A filament reaches several µm out into the water, toward the lens when the cell swims away from
+    // it, so it dissolves further out than the cell's own parts do.
+    this.material = cellMaterial({ color: ORGANELLE.flagellum, bend: true, glow: 0.3, translucency: 0.7, nearFade: [0.4, 1.2] });
     this.curve = new Helix(length, 2.3, 0.2);
     this.filament = new THREE.Mesh(taperedTube(this.curve, 420, 0.0092, 7), this.material);
     this.filament.frustumCulled = false;
