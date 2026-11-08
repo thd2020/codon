@@ -1028,7 +1028,11 @@ export class MicroIntro {
     for (let i = this.rods.length - 1; i >= 0; i--) {
       const b = this.rods[i];
       const lag = b.lag;
-      const pace = (b.dividing ? 0.25 : 1) * (1 - smooth(6.5 + lag, 9 + lag, t));
+      // a daughter's home moves off from where it was born over a few seconds, so the two swim apart
+      // rather than leap (the tether pulls hard under the time-lapse)
+      if (b.homeTo) b.home.lerpVectors(b.homeFrom, b.homeTo, smoother(b.born + 0.2, b.born + 3.2, t));
+      // (a newborn daughter finds its stroke over a moment: it doesn't dart off its sister)
+      const pace = (b.dividing ? 0.25 : 1) * (1 - smooth(6.5 + lag, 9 + lag, t)) * (b.born != null ? smooth(b.born, b.born + 1.2, t) : 1);
       const drive = this.swim(b, wdt, pace);
       const off = this._v[0].copy(b.home).sub(b.group.position);
       const d = off.length();
@@ -1069,7 +1073,10 @@ export class MicroIntro {
           const pos = long.group.position.clone().addScaledVector(ax, sgn * 1.0 * long.group.scale.x);
           const b = neighbours.spawnAt({ position: pos, quaternion: long.group.quaternion }, { seed: 430 + (sgn > 0 ? 0 : 1), wall: 1 });
           // the daughters swim off a little way into the mixed water, away from the lens
-          b.home = pos.clone().addScaledVector(ax, sgn * 1.5).addScaledVector(this.L.beyond, 8).addScaledVector(this.L.right, -2.5);
+          b.homeTo = pos.clone().addScaledVector(ax, sgn * 1.5).addScaledVector(this.L.beyond, 8).addScaledVector(this.L.right, -2.5);
+          b.homeFrom = pos.clone();
+          b.home = pos.clone();
+          b.born = t;
           b.lag = long.lag + (sgn > 0 ? 0.1 : 0.35);
           b.tether = 1.2;
           b.state = { run: 0.6 + (sgn > 0 ? 0.4 : 1.1), tumble: 0, axis: new THREE.Vector3(1, 0, 0), thrust: 0, bundle: 0.5 };

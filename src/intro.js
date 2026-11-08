@@ -148,7 +148,7 @@ class VeilPass extends Pass {
       depthWrite: false,
     });
     this.quad = new FullScreenQuad(this.material);
-    this.hold = null;
+    this.holds = null;
     this.wantCapture = false;
   }
 
@@ -162,12 +162,15 @@ class VeilPass extends Pass {
     u.tDiffuse.value = readBuffer.texture;
     u.uAspect.value = readBuffer.width / readBuffer.height;
     if (this.wantCapture) {
-      if (!this.hold) this.hold = new THREE.WebGLRenderTarget(readBuffer.width, readBuffer.height);
-      if (this.hold.width !== readBuffer.width || this.hold.height !== readBuffer.height) this.hold.setSize(readBuffer.width, readBuffer.height);
+      // Two targets in turn: what is on screen may itself still be fading from the last kept frame,
+      // and a target can't be drawn into while it is being read.
+      this.holds ??= [0, 1].map(() => new THREE.WebGLRenderTarget(readBuffer.width, readBuffer.height));
+      const into = this.holds[u.tHold.value === this.holds[0].texture ? 1 : 0];
+      if (into.width !== readBuffer.width || into.height !== readBuffer.height) into.setSize(readBuffer.width, readBuffer.height);
       // Keep what is on screen now, veil and all.
-      renderer.setRenderTarget(this.hold);
+      renderer.setRenderTarget(into);
       this.quad.render(renderer);
-      u.tHold.value = this.hold.texture;
+      u.tHold.value = into.texture;
       u.uHold.value = 1;
       this.wantCapture = false;
     }
@@ -178,7 +181,7 @@ class VeilPass extends Pass {
   dispose() {
     this.material.dispose();
     this.quad.dispose();
-    this.hold?.dispose();
+    for (const h of this.holds ?? []) h.dispose();
   }
 }
 
@@ -280,7 +283,7 @@ class IntroUI {
 
   // Writes a style (or attribute, for `attr`) only when its value changes.
   put(node, key, value, attr = false) {
-    const k = `${node === this.skipArc ? 'a' : node === this.bar ? 'b' : node === this.barLine ? 'l' : node === this.picto ? 'p' : 's'}.${key}`;
+    const k = `${node === this.skipArc ? 'a' : node === this.bar ? 'b' : node === this.barLine ? 'l' : node === this.picto ? 'p' : node === this.barLabel ? 'L' : 's'}.${key}`;
     if (this.was[k] === value) return;
     this.was[k] = value;
     if (attr) node.setAttribute(key, value);
@@ -330,9 +333,11 @@ class IntroUI {
   }
 
   // x, y: where the middle of the line sits (CSS px); by default centred, low in the frame.
-  setBar(visible, label, px, x = innerWidth / 2, y = BAR_Y * innerHeight) {
+  // labelOn false lets the label go first (the HUD's own label takes its place).
+  setBar(visible, label, px, x = innerWidth / 2, y = BAR_Y * innerHeight, labelOn = true) {
     this.put(this.bar, 'opacity', visible ? '1' : '0');
     if (!visible) return;
+    this.put(this.barLabel, 'opacity', labelOn ? '1' : '0');
     if (label !== this.label) {
       this.label = label;
       this.barLabel.textContent = label;
@@ -393,7 +398,8 @@ export class Intro {
   // glass dives by itself). preroll: false starts at once (call it from a click or key handler, so
   // the sound can start in that gesture), with no web pre-roll. audio: an earlier opening's
   // IntroAudio still playing (main.js's first-launch `intro.audio`): it fades out and closes as this
-  // one starts, so its tide never plays under the dawn.
+  // one starts, so its tide never plays under the dawn. feeding: the game's Feeding (optional): its
+  // food and glucose motes are kept out of the opening and grow back in at the hand-over.
   constructor({ renderer, composer, look, scene, camera, controls, cellPass, water, hero, neighbours, player, hud, feeding = null, params, MicroIntro = null, iconUrl, Morning = null, onHub = null, onDive = null, autoDive = true, replay = false, preroll = true, audio = null } = {}) {
     Object.assign(this, { renderer, composer, look, scene, camera, controls, cellPass, water, hero, neighbours, player, hud, onHub, onDive, autoDive, replay });
     params = params ?? new URLSearchParams(location.search);
@@ -1547,7 +1553,7 @@ export class Intro {
         px += (at.z - px) * k;
       }
     }
-    this.ui.setBar(true, label, px, x, y);
+    this.ui.setBar(true, label, px, x, y, !overlap);
   }
 
   // Where the HUD's own 1 µm bar is on screen: (x, y) the middle of its line in CSS px, z its length.
