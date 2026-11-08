@@ -581,7 +581,7 @@ export class MicroIntro {
     this.heroParts(0);
 
     // the salt front: tear water warmer and brighter, layered like heat haze
-    water.setFront({ normal: L.n, offset: L.frontOffset, width: 600, edge: 12, strength: 1, reach: 1200, layers: 15, tint: [1.12, 1.08, 1.0], depth: 140, motes: [1.0, 0.78, 0.48] });
+    water.setFront({ normal: L.n, offset: L.frontOffset, width: 600, edge: 12, strength: 1, reach: 1200, layers: 15, tint: [1.09, 1.06, 0.99], depth: 140, motes: [1.0, 0.78, 0.48] });
     cellPass.setSaltTints?.([1.08, 1.04, 0.95], [0.94, 0.97, 1.02]);
 
     this.bindInput();
@@ -931,7 +931,7 @@ export class MicroIntro {
     } else {
       const stiff = this.glideAt !== null ? smooth(0, 0.8, gu) : 0;
       const swim = smooth(12, 13, t) * (1 - smooth(15.5, 17, t)) * (1 - stiff);
-      bundle = 0.4 + 0.1 * swim + (0.55 - 0.4) * stiff;
+      bundle = 0.8 - 0.25 * swim * 0 - (0.8 - 0.55) * Math.max(stiff, swim);
       omega = 2 + 6 * swim + 4 * stiff;
       thrust = 0.25 * swim;
     }
@@ -1162,7 +1162,7 @@ export class MicroIntro {
     u.uFrontP.value.w = 1 - this.late(13, 17.5, t, gu);
     const reach = Math.min(1200, 1.4 / fog);
     u.uFrontT.value.x = reach;
-    u.uFrontK.value = THREE.MathUtils.clamp(0.3 * reach, 20, 140);
+    u.uFrontK.value = THREE.MathUtils.clamp(0.4 * reach, 24, 160);
     // the crowd and the props sink into the depth, then go
     const rm = this.reducedMotion;
     this.crowd.opacity = 0.6 * (1 - (rm ? (this.rmFrame > 0 ? 1 : 0) : this.late(3, 5, t, gu)));
