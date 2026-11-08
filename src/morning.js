@@ -1,9 +1,11 @@
 import * as THREE from 'three';
 import { Intro } from './intro.js';
 
-// The child on the step, as the drops show them: a figure of tapered capsules and a head, posed by
-// joints, set into the Garden's shared uniforms (uSitA, uSitB, uSitHead, uSitGlint). Only ever seen
-// through the beads, upside down and small. No face: it is a silhouette.
+// The child on the step: a figure of tapered capsules, a head and the hair gathered at its back,
+// posed by joints, set into the Garden's shared uniforms (uSitA, uSitB, uSitHead, uSitHair,
+// uSitGlint). The drops show them sharp, small and upside down against the lit back door; the eye,
+// focused on the bead, sees the same figure only as a soft dark shape in the door's glow. No face:
+// it is a silhouette.
 //
 // Local frame (mm): origin on the step under the hips, +x the way the child faces, +y up, +z the
 // child's left. A nine-year-old: thigh about 330, shin 300, hips to shoulders 330, head radius 86.
@@ -37,14 +39,14 @@ const SOB_JOINTS = ['shoulder', 'head', 'hair', 'elbow'];
 // The capsules: [from, radius, to, radius]. The trunk in two (so the back rounds), the neck, a
 // thigh, a shin, a foot (these six melt into one mass), then the near arm in two (kept distinct).
 const CAPS = [
-  ['pelvis', 92, 'back', 86],
-  ['back', 86, 'shoulder', 76],
-  ['shoulder', 52, 'head', 44],
-  ['pelvis', 66, 'knee', 56],
-  ['knee', 54, 'ankle', 40],
-  ['ankle', 38, 'toe', 28],
-  ['shoulder', 40, 'elbow', 34],
-  ['elbow', 33, 'hand', 28],
+  ['pelvis', 86, 'back', 78],
+  ['back', 78, 'shoulder', 68],
+  ['shoulder', 48, 'head', 40],
+  ['pelvis', 60, 'knee', 52],
+  ['knee', 50, 'ankle', 37],
+  ['ankle', 36, 'toe', 27],
+  ['shoulder', 38, 'elbow', 32],
+  ['elbow', 31, 'hand', 27],
 ];
 
 export class ChildFigure {
@@ -97,7 +99,7 @@ export class ChildFigure {
     }
     u.uSitA.value[8].w = 0;
     const h = this.at('head');
-    u.uSitHead.value.set(h.x, h.y, h.z, 98);
+    u.uSitHead.value.set(h.x, h.y, h.z, 102);
     const hr = this.at('hair');
     u.uSitHair.value.set(hr.x, hr.y, hr.z, 44);
     // The brass loupe in the lap, on the near side, between the chest and the thighs.
@@ -120,10 +122,11 @@ const LEAN_ROOT = new THREE.Vector3(40, 0, -400);
 //
 //   0:00  Before light. Black, a blackbird, someone crying quietly, a wet-glass A; a dawn gradient,
 //         then one point of light: the bead in the leaf's cup catching the brightest of the sky.
-//   0:04  The leaf. Low across the lady's mantle, pushing in on the central bead (55 -> 26 mm by
-//         0:10, then creeping on until it fills two fifths of the frame); behind, in soft bokeh, the
-//         step and the house with one lit window. Inside the bead the world hangs upside down and
-//         sharp: the sky at the bottom, the house, a child on the step, knees up, head down. 0:12 the
+//   0:04  The leaf. Low across the lady's mantle, pushing in on the central bead (42 -> 21 mm by
+//         0:10, then on to 11 mm, until it fills two fifths of the frame); behind, in soft bokeh, the
+//         house's lit back door with a soft dark shape in its glow. Inside the bead the world hangs
+//         upside down and sharp, and the shape resolves: a child on the step in front of the door,
+//         knees up, head down (honest optics: the drop and the eye look the same way). 0:12 the
 //         shoulders shake once; something brass glints in the lap. 0:14 the figure leans forward
 //         and raises a hand to its face.
 //   0:16  The tear. The camera eases back and tilts up into the space above the bead; the top of the
@@ -202,12 +205,20 @@ const RING = { a2: 0.12, w2: 240, tau2: 0.9, a3: 0.05, w3: 466, tau3: 0.33 };
 const AZ = -17;
 const CAM = {
   start: { d: 42, el: 9, az: AZ - 2 },
-  tenth: 26, // at 0:10
   near: { d: 11, el: 4, az: AZ + 2 },
   back: { d: 19, el: 6 },
   rise: { d: 24, el: 18 },
   top: { d: 117, el: 90 },
 };
+
+// Reduced motion's held framings (no push, no rise): one per stage.
+const RM_POSES = [
+  { d: 30, el: 8, az: AZ, lookUp: 0 },
+  { d: CAM.near.d, el: CAM.near.el, az: CAM.near.az, lookUp: 0 },
+  { d: CAM.back.d, el: CAM.back.el, az: CAM.near.az, lookUp: 1 },
+  { d: CAM.rise.d, el: CAM.rise.el, az: CAM.near.az, lookUp: 0 },
+  { d: CAM.top.d, el: CAM.top.el, az: CAM.near.az + 180, lookUp: 0 },
+];
 
 export class Morning {
   // intro: the director (intro.js) that owns the Garden, the veil, the audio and the interface.
@@ -359,7 +370,7 @@ export class Morning {
     // balanced for that ground), so the light never flares on the way up.
     const expoUp = smooth(M.loupeIn, M.end - 0.4, t);
     const low = 0.66 + 0.1 * smooth(M.reveal, 8, t);
-    g.expo = (low + (0.8 - low) * up) * (1 - expoUp) + 1.22 * expoUp;
+    g.expo = low * (1 - expoUp) + 1.22 * expoUp;
     g.farGain = 0.8 + (0.37 - 0.8) * up;
     // A firmer curve for the low views (dawn light across the leaf has depth), held through the
     // rise; the hub's own once the hub's frame is nearly there.
@@ -395,7 +406,7 @@ export class Morning {
     return this.garden.camera.position.y - this.bead.y;
   }
 
-  // The child on the step (seen only through the bead).
+  // The child on the step (sharp in the bead, a soft shape in the bokeh).
   stepFigure(t) {
     const f = this.figure;
     const u = this.garden.u;
@@ -497,7 +508,8 @@ export class Morning {
     const c = this.cam;
     if (this.reducedMotion) this.reducedPose(t);
     else if (t < M.back) {
-      // Shot 1: 55 -> 26 mm by 0:10, on to 13.5 mm, lowering from 9 to 6 degrees, drifting 4.
+      // Shot 1: 42 -> 21 mm by 0:10 (the bead a quarter of the frame), on to 11 mm, lowering from 9 to 4
+      // degrees, drifting 4.
       const u = smoother((t - M.reveal) / (M.pushEnd - M.reveal));
       c.d = logLerp(CAM.start.d, CAM.near.d, u);
       c.el = CAM.start.el + (CAM.near.el - CAM.start.el) * u;
@@ -548,13 +560,7 @@ export class Morning {
   reducedPose(t) {
     const c = this.cam;
     const stage = t < 10 ? 0 : t < M.back ? 1 : t < M.settle + 0.5 ? 2 : t < M.rise + 1 ? 3 : 4;
-    const P = [
-      { d: 30, el: 8, az: AZ, lookUp: 0 },
-      { d: CAM.near.d, el: CAM.near.el, az: CAM.near.az, lookUp: 0 },
-      { d: CAM.back.d, el: CAM.back.el, az: CAM.near.az, lookUp: 1 },
-      { d: CAM.rise.d, el: CAM.rise.el, az: CAM.near.az, lookUp: 0 },
-      { d: CAM.top.d, el: CAM.top.el, az: CAM.near.az + 180, lookUp: 0 },
-    ];
+    const P = RM_POSES;
     // A new framing: keep this frame (as it is drawn now) to crossfade from, and cut on the next.
     if (this.rmStage === undefined) this.rmStage = stage;
     else if (stage !== this.rmStage && this.rmPending == null) {

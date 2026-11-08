@@ -249,7 +249,7 @@ const YARD = /* glsl */ `
     return t > 0.0 ? length(q) - S.w : 1e5;
   }
   // The child on the step, as the drops see it (and, blurred, the eye): one dark mass against the
-  // lit window, the house and the sky. The parts are joined by a smooth minimum of their silhouette
+  // lit back door, the house and the sky. The parts are joined by a smooth minimum of their silhouette
   // distances, so the figure reads as a body, not as tubes: the trunk and legs melt into each other,
   // the head and the arm keep a small notch where they meet it, so the head stays a head and light
   // shows between the arm and the body.
@@ -290,7 +290,7 @@ const YARD = /* glsl */ `
     // Facing the eye at the middle of a limb, turned away at its edge.
     ns /= max(ws, 1e-6);
     vec3 nb = normalize(ns - d * sqrt(max(0.0, 1.0 - dot(ns, ns))) + 1e-5);
-    float soft = 0.0042 * tf;
+    float soft = 0.003 * tf;
     float m = 1.0 - smoothstep(-soft, soft, sd);
     // A silhouette: lit a little from the sky above, warmer on the side the dawn glow reaches. Where
     // the lit window lies behind the figure along this same ray, its light wraps the edge a little
@@ -302,7 +302,7 @@ const YARD = /* glsl */ `
       vec3 pw = ro + d * ((Z_HOUSE - ro.z) / d.z);
       win = winIn(pw.xy - uWinRect.xy);
     }
-    sil += uWin * 0.16 * win * (1.0 - smoothstep(0.0, 2.5 * soft + 6.0, -sd));
+    sil += uWin * uExpo * 0.12 * win * (1.0 - smoothstep(0.0, 1.2 * soft + 3.0, -sd));
     c = mix(c, sil, m * uSit);
     // The brass in the lap: a point that catches the sky.
     vec3 og = ro - uSitGlint.xyz;
@@ -956,9 +956,12 @@ const beadFragment = /* glsl */ `
     float hs = max(dot(Rr, uGlowDir), 0.0);
     vec3 W = normalize(uGlowDir + vec3(0.0, 0.42, 0.0));
     float hw = max(dot(Rr, W), 0.0);
-    refl += uSun * (pow(hs, 70.0) * 9.0 + pow(hs, 700.0) * 30.0);
+    // (The sun's glints fade at the very silhouette, where a grazing ray would catch them pixel by
+    // pixel along the rim as a row of sparkles.)
+    float graze = smoothstep(0.03, 0.18, cosi);
+    refl += uSun * (pow(hs, 70.0) * 9.0 + pow(hs, 700.0) * 30.0) * graze;
     col = mix(thru, refl, F);
-    col += uSun * (smoothstep(0.9965, 0.9985, hw) * 2.6 + pow(hw, 260.0) * 0.5) * uExpo;
+    col += uSun * (smoothstep(0.9965, 0.9985, hw) * 2.6 + pow(hw, 260.0) * 0.5) * uExpo * graze;
     // At a ting the rim brightens: the sky bends round the edge.
     col += skyColor(vec3(0.0, 1.0, 0.0)) * pow(1.0 - cosi, 3.0) * (0.06 + 0.4 * min(vBead.z, 1.0));
     // A falling drop (rim boost above 1) catches the glow in one hard point: at a distance it is
