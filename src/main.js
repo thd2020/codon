@@ -50,9 +50,7 @@ cellPass.setColors({
 });
 
 const hero = new Bacterium({ hero: true, seed: 42 });
-// ?roll=R turns the cell R radians about its long axis at the start (to try which side faces the
-// camera; the energy route sits on the body's -x -y side).
-hero.group.rotation.set(0, -0.35, params.has('roll') ? +params.get('roll') : 0);
+hero.group.rotation.set(0, -0.35, 0);
 scene.add(hero.group);
 cellPass.add(hero);
 
