@@ -35,6 +35,18 @@ const domeFragment = /* glsl */ `
   uniform float uTime;
   uniform vec3 uMeniscus, uSky, uHorizon, uHaze, uDeep, uAbyss, uSun, uSunDir, uWindow, uWin;
   uniform vec4 uSunShape;
+  uniform float uScale;   // caustic net frequency: >1 makes the net finer (seen from further away)
+  uniform vec4 uShade;    // a shadow across the sky (the watcher leaning over): direction, strength
+  uniform vec2 uShadeR;   // its inner and outer cosine
+  uniform float uFlash;   // 0..1 toward white (the crossing under the meniscus)
+  uniform float uCaustic; // strength of the caustic net (1 normal)
+  uniform float uCausThread; // how much of its sharp threads show (1 normal; the soft glow stays)
+  // A broad band of salty tear water (the salt front), integrated along each view ray: x is the
+  // distance into the band from its mixed edge along uFrontN; x = dot(p, n) - uFrontP.x.
+  uniform vec3 uFrontN, uFrontCol;
+  uniform vec4 uFrontP;   // plane offset, width w, edge width e, strength
+  uniform vec2 uFrontT;   // how far along the ray it counts (µm), layer spacing (µm)
+  uniform float uFrontK;  // µm of band water a ray needs to show about 63% of the tint
   varying vec3 vDir;
 
   float h12(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
@@ -74,9 +86,52 @@ const domeFragment = /* glsl */ `
     float k = n2(p * 0.8 + t * 0.15);
     float w = max(0.006 + 0.008 * k, aa * 0.7);
     float thread = (1.0 - smoothstep(w - aa * 0.5, w + aa * 0.5, e)) * (0.45 + 0.8 * k);
-    float glow = exp(-e / 0.07) * (0.5 + 0.5 * k);
+    // Seen from further off (uScale > 1) the threads give way to their glow, which widens into a
+    // soft mottled veil: the net never turns into a web of hairlines.
+    float glow = exp(-e / (0.07 * (1.0 + 1.6 * smoothstep(1.1, 2.6, uScale)))) * (0.5 + 0.5 * k);
     float far = smoothstep(0.05, 0.12, length(fwidth(p)));
     return mix(vec2(thread, glow), vec2(0.1, 0.2), far);
+  }
+
+  // Integral of smoothstep(a, b, s) ds from -inf to x.
+  float rampInt(float x, float a, float b) {
+    float u = clamp((x - a) / (b - a), 0.0, 1.0);
+    return (b - a) * (u * u * u - 0.5 * u * u * u * u) + max(x - b, 0.0);
+  }
+  // The band's profile S(x) = smoothstep(0, e, x) - smoothstep(w - 150, w, x), integrated. The edge
+  // e is widened with distance (gBandE), so seen edge-on from far off it is a soft gradient, never
+  // a line.
+  float gBandE;
+  float bandInt(float x) {
+    return rampInt(x, -0.5 * (gBandE - uFrontP.z), uFrontP.z + 0.5 * (gBandE - uFrontP.z)) - rampInt(x, uFrontP.y - 150.0, uFrontP.y);
+  }
+  float bandAt(float x) {
+    return smoothstep(-0.5 * (gBandE - uFrontP.z), uFrontP.z + 0.5 * (gBandE - uFrontP.z), x) - smoothstep(uFrontP.y - 150.0, uFrontP.y, x);
+  }
+  // A gentle bend of the band, so its layers curve instead of running dead straight.
+  float bandWarp(vec3 p) {
+    return 26.0 * sin(p.x * 0.0061 + p.y * 0.0023 + 1.3) + 14.0 * sin(p.z * 0.0087 - p.y * 0.0041);
+  }
+  // How much band water a ray passes through (0..1) and the layering seen along it (-1..1).
+  vec2 saltFront(vec3 d) {
+    vec3 o = cameraPosition;
+    float T = uFrontT.x;
+    float dn = dot(d, uFrontN);
+    float x0 = dot(o, uFrontN) - uFrontP.x + bandWarp(o);
+    float x1 = dot(o + d * T, uFrontN) - uFrontP.x + bandWarp(o + d * T);
+    float slope = (x1 - x0) / T;
+    gBandE = max(uFrontP.z, 0.08 * abs(x0));
+    float L = abs(slope) > 1e-4 ? (bandInt(x1) - bandInt(x0)) / slope : bandAt(x0) * T;
+    // Layers: the integral of sin along the ray, so they show where the ray runs along them (where
+    // you see the band edge-on) and average away where it cuts across them, like real schlieren.
+    float k = 6.2831853 / uFrontT.y;
+    float ph = 2.2 * sin(d.x * 7.0 + d.y * 5.0 + uTime * 0.05) + 1.4 * sin(d.z * 11.0 - d.x * 6.0 - uTime * 0.04);
+    float lay = abs(slope) * k * T > 0.05 ? (cos(k * x0 + ph) - cos(k * x1 + ph)) / (k * (x1 - x0)) : sin(k * x0 + ph);
+    // where the ray runs along the layers (a grazing view) they would stack into one line: there
+    // they fade, and only show where the ray crosses them at a slant
+    lay *= smoothstep(0.02, 0.15, abs(slope));
+    float amount = 1.0 - exp(-max(L, 0.0) / uFrontK);
+    return vec2(amount, lay);
   }
 
   void main() {
@@ -97,17 +152,28 @@ const domeFragment = /* glsl */ `
     // window and sun (LOOK.cellEnvironment.window / .sun).
     float s = max(dot(d, uSunDir), 0.0);
     float win = smoothstep(uWin.y, uWin.x, s);
+    float shade = uShade.w * smoothstep(uShadeR.y, uShadeR.x, dot(d, uShade.xyz));
     // Caustics on the meniscus: threads well above the water (the meniscus sits a step below white
     // to leave them room), the water between them slightly darker, so the net reads both ways.
     if (y > 0.06) {
-      vec2 uv = d.xz / y * 0.8 + vec2(uTime * 0.006, uTime * 0.004);
+      vec2 uv = d.xz / y * 0.8 * uScale + vec2(uTime * 0.006, uTime * 0.004);
       vec2 ca = caustic(uv, uTime * 0.35);
-      float m = smoothstep(0.1, 0.45, y) * (1.0 - 0.6 * win);
+      float m = smoothstep(0.1, 0.45, y) * (1.0 - 0.6 * win) * (1.0 - 0.8 * shade) * uCaustic;
       col *= 1.0 - 0.09 * m * (1.0 - min(ca.y, 1.0));
-      col += uSun * (ca.x * 1.6 + ca.y * 0.3) * m;
+      col += uSun * (ca.x * 1.6 * uCausThread * (1.0 - smoothstep(1.2, 2.0, uScale)) + ca.y * 0.3) * m;
     }
     col += uWindow * uWin.z * win;
     col += uSun * (pow(s, uSunShape.x) * uSunShape.y + pow(s, uSunShape.z) * uSunShape.w);
+    col *= 1.0 - 0.22 * shade;
+    // The salt front: brighter, faintly warm water, layered like heat haze.
+    if (uFrontP.w > 0.0) {
+      vec2 sf = saltFront(d);
+      // tear water is a touch brighter and warmer than the water round it: a tint, so the drop's
+      // own depth still shows through it
+      col *= mix(vec3(1.0), uFrontCol, sf.x * uFrontP.w);
+      col *= 1.0 + 0.06 * sf.y * sf.x * uFrontP.w;
+    }
+    col = mix(col, uWindow * 1.05, uFlash);
     gl_FragColor = vec4(col, 1.0);
   }
 `;
@@ -123,11 +189,23 @@ function domeMaterial() {
       uHaze: { value: sceneColor(D.haze) },
       uDeep: { value: sceneColor(D.deep) },
       uAbyss: { value: sceneColor(D.abyss) },
-      uSun: { value: ENV.sunColor },
-      uSunDir: { value: ENV.sunDir },
-      uWindow: { value: ENV.sky },
+      // Copies, so a palette change (dawn) never touches LOOK itself.
+      uSun: { value: ENV.sunColor.clone() },
+      uSunDir: { value: ENV.sunDir.clone() },
+      uWindow: { value: ENV.sky.clone() },
       uWin: { value: new THREE.Vector3(w.cosIn, w.cosOut, w.gain) },
       uSunShape: { value: new THREE.Vector4(sun.power, sun.gain, sun.glowPower, sun.glowGain) },
+      uScale: { value: 1 },
+      uShade: { value: new THREE.Vector4(0, 1, 0, 0) },
+      uShadeR: { value: new THREE.Vector2(0.95, 0.75) },
+      uFlash: { value: 0 },
+      uCaustic: { value: 1 },
+      uCausThread: { value: 1 },
+      uFrontK: { value: 140 },
+      uFrontN: { value: new THREE.Vector3(1, 0, 0) },
+      uFrontCol: { value: new THREE.Color(1.1, 1.06, 1.0) },
+      uFrontP: { value: new THREE.Vector4(0, 500, 20, 0) },
+      uFrontT: { value: new THREE.Vector2(600, 22) },
     },
     vertexShader: domeVertex,
     fragmentShader: domeFragment,
@@ -157,6 +235,9 @@ const particleVertex = /* glsl */ `
   attribute vec3 aColor;
   uniform float uTime, uBox, uFocus, uScale, uApK, uApNear, uFog, uFront, uOpacity, uSplit;
   uniform vec3 uCentre, uSunDir;
+  // The salt front (the dome's own uniforms, shared): motes in tear water are warmer.
+  uniform vec3 uSaltN, uSaltCol;
+  uniform vec4 uSaltP;
   varying vec3 vColor;
   varying float vAlpha, vDiam, vSharp, vSeed, vDist, vFlash;
   varying vec2 vSun, vHl;
@@ -234,6 +315,12 @@ const particleVertex = /* glsl */ `
     vDiam = diam;
     vDist = dist;
     vColor = aColor;
+    if (uSaltP.w > 0.0) {
+      // the same gentle bend as the dome's band
+      float sx = dot(p, uSaltN) - uSaltP.x + 26.0 * sin(p.x * 0.0061 + p.y * 0.0023 + 1.3) + 14.0 * sin(p.z * 0.0087 - p.y * 0.0041);
+      float salt = uSaltP.w * (smoothstep(0.0, uSaltP.z, sx) - smoothstep(uSaltP.y - 150.0, uSaltP.y, sx));
+      vColor = mix(aColor, aColor * 0.55 + uSaltCol * (0.45 * max(max(aColor.r, aColor.g), aColor.b) + 0.1), 0.6 * salt);
+    }
     vSeed = aSeed.w;
     // Where the sun is, seen from here: the lit side of a body, and the spot on a sphere that
     // mirrors the sun (its normal halfway between the view and the sun).
@@ -510,6 +597,8 @@ const shaftFragment = /* glsl */ `
   }
 `;
 
+const _h = new THREE.Vector3();
+
 const SHAFT_GRID = 9; // µm between curtains on the lattice
 const SHAFT_POOL = 40;
 
@@ -544,10 +633,15 @@ export class Water {
     // Glints are pure light: their colour sits far above the water's, so bloom gives them halation.
     const glints = { count: 450, box: 12, size: [0.02, 0.04], seed: 23, gain: 5, colors: [[0xffffff, 3], [0xfff0d8, 1], [0xe8f6ff, 1]] };
     this.layers = [];
+    // the warm gold motes take in tear water (scene-linear)
+    this.saltCol = { value: new THREE.Color(1.0, 0.78, 0.48) };
     const layer = (spec, kind, opacity, { sides = [false, true], ahead = 'focus' } = {}) => {
       const g = particleGeometry(spec);
       for (const front of sides) {
         const pts = new THREE.Points(g, particleMaterial({ kind, box: spec.box, opacity, front }));
+        // the salt front's uniforms, shared with the dome (so setFront() reaches them too)
+        const du = this.dome.material.uniforms;
+        Object.assign(pts.material.uniforms, { uSaltN: du.uFrontN, uSaltP: du.uFrontP, uSaltCol: this.saltCol });
         pts.frustumCulled = false;
         pts.renderOrder = 5;
         pts.userData.ahead = ahead;
@@ -561,6 +655,11 @@ export class Water {
     layer(vesicles, KIND.vesicle, 1.0);
     layer(near, KIND.bokeh, 0.26, { sides: [true], ahead: 0.3 });
     layer(glints, KIND.glint, 1.0);
+    // One sun direction for the dome and every particle, so setSun() moves them together.
+    this.sunDir = this.dome.material.uniforms.uSunDir.value;
+    for (const p of this.layers) p.material.uniforms.uSunDir.value = this.sunDir;
+    this.shaftGain = 1; // the rays' strength (the opening brings them in as the sun climbs)
+    this.scale = 1; // the world seen from further away: caustics finer, rays wider apart
 
     this.shafts = [];
     const shaftColor = new THREE.Color(0xfffaf0);
@@ -594,12 +693,123 @@ export class Water {
       this.shafts.push(mesh);
       scene.add(mesh);
     }
-    // Rays run along the refracted sunlight (about 22° from vertical in water).
-    const h = new THREE.Vector3(ENV.sunDir.x, 0, ENV.sunDir.z).normalize().multiplyScalar(Math.tan(Math.asin(Math.sin(Math.acos(ENV.sunDir.y)) / 1.33)));
-    this._rayUp = new THREE.Vector3(h.x, 1, h.z).normalize();
+    this._rayUp = new THREE.Vector3();
+    this.setSun(ENV.sunDir);
     this._fwd = new THREE.Vector3();
     this._v = [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()];
     this._cands = [];
+  }
+
+  // The sun's direction (world, toward the sun): the dome's window and disc, the particles' lit
+  // side, and the rays, which run along the refracted sunlight (about 22° from vertical at the
+  // morning sun).
+  setSun(dir) {
+    this.sunDir.copy(dir).normalize();
+    const s = this.sunDir;
+    const h = _h.set(s.x, 0, s.z).normalize().multiplyScalar(Math.tan(Math.asin(Math.sin(Math.acos(THREE.MathUtils.clamp(s.y, -1, 1))) / 1.33)));
+    this._rayUp.set(h.x, 1, h.z).normalize();
+  }
+
+  // The drop's colours (display hex, keys as LOOK.drop: meniscus, sky, horizon, haze, deep, abyss,
+  // sun; optional film: what membranes mirror overhead), and optionally the sun's direction.
+  // The fog takes the horizon colour. CellPass and the lens are set by applyDrop() in lens.js.
+  setPalette(drop, sunDir) {
+    const u = this.dome.material.uniforms;
+    sceneColor(drop.meniscus, 1, u.uMeniscus.value);
+    sceneColor(drop.sky, 1, u.uSky.value);
+    sceneColor(drop.horizon, 1, u.uHorizon.value);
+    sceneColor(drop.haze, 1, u.uHaze.value);
+    sceneColor(drop.deep, 1, u.uDeep.value);
+    sceneColor(drop.abyss, 1, u.uAbyss.value);
+    u.uSun.value.set(drop.sun);
+    if (drop.film !== undefined) sceneColor(drop.film, 1, u.uWindow.value);
+    this.scene.fog.color.copy(u.uHorizon.value);
+    if (sunDir) this.setSun(sunDir);
+  }
+
+  // Fog density for the scene, the particles and the rays (CellPass's is set separately).
+  setFogDensity(d) {
+    this.scene.fog.density = d;
+    for (const p of this.layers) p.material.uniforms.uFog.value = d;
+    for (const s of this.shafts) s.material.uniforms.uFog.value = d * 0.6;
+  }
+
+  // Seen from k times further than usual (the shrinking opening): the caustic net is k times finer
+  // and the rays k times wider and further apart.
+  setScale(k) {
+    this.scale = k;
+    this.dome.material.uniforms.uScale.value = k;
+    // The particles are sized for the cell's scale: seen from further off they are dust below a
+    // pixel (and the lens's bokeh would balloon), so they fade out, and come back as you arrive.
+    // The lens's own bokeh (specks right in front of it) waits until you are at the cell's scale.
+    const show = 1 - THREE.MathUtils.smoothstep(k, 2.4, 4.2);
+    const lens = 1 - THREE.MathUtils.smoothstep(k, 1.08, 1.6);
+    for (const p of this.layers) {
+      const u = p.material.uniforms.uOpacity;
+      p.userData.opacity ??= u.value;
+      const v = p.material.defines.KIND === KIND.bokeh ? lens : show;
+      u.value = p.userData.opacity * v;
+      p.visible = v > 0.001;
+    }
+  }
+
+  // How strongly the caustic net shows (1 normal).
+  set caustics(v) {
+    this.dome.material.uniforms.uCaustic.value = v;
+  }
+  get caustics() {
+    return this.dome.material.uniforms.uCaustic.value;
+  }
+  // How much of the net's sharp threads show (1 normal; 0 leaves only their soft glow).
+  set causticThreads(v) {
+    this.dome.material.uniforms.uCausThread.value = v;
+  }
+  get causticThreads() {
+    return this.dome.material.uniforms.uCausThread.value;
+  }
+
+  // The crossing's flash (0..1, toward white); callers keep it within the flash limit.
+  set flash(v) {
+    this.dome.material.uniforms.uFlash.value = v;
+  }
+  get flash() {
+    return this.dome.material.uniforms.uFlash.value;
+  }
+
+  // A soft shadow across the sky: dir (world, toward the shadow's centre), strength 0..1, edge as
+  // the cosines [inner, outer]. The watcher leaning over, and the blink.
+  setShade(dir, strength, inner = 0.95, outer = 0.75) {
+    const u = this.dome.material.uniforms;
+    const l = Math.hypot(dir.x, dir.y, dir.z) || 1;
+    u.uShade.value.set(dir.x / l, dir.y / l, dir.z / l, strength);
+    u.uShadeR.value.set(inner, outer);
+  }
+
+  // The salt front: a band of tear water w µm wide whose mixed edge is the plane dot(p, normal) =
+  // offset, rising over e µm; strength 0 hides it. reach: how far along a ray it counts (µm);
+  // layers: the spacing of its layers (µm).
+  // tint: what the band multiplies the water by where it is thickest (scene-linear, [r, g, b]).
+  // depth: µm of band water a ray must cross to show about 63% of the tint. motes: the colour
+  // (scene-linear [r, g, b]) motes and glints warm toward inside the band.
+  setFront({ normal, offset = 0, width = 500, edge = 20, strength = 0, reach = 600, layers = 22, tint, depth = 140, motes } = {}) {
+    const u = this.dome.material.uniforms;
+    if (normal) u.uFrontN.value.copy(normal).normalize();
+    u.uFrontP.value.set(offset, width, edge, strength);
+    u.uFrontT.value.set(reach, layers);
+    u.uFrontK.value = depth;
+    if (tint) u.uFrontCol.value.setRGB(...tint);
+    if (motes) this.saltCol.value.setRGB(...motes);
+  }
+
+  // How much tear water there is at a world point (0..1, the band's own profile and bend, times its
+  // strength): what the opening warms a cell by.
+  saltAt(p) {
+    const u = this.dome.material.uniforms;
+    const P = u.uFrontP.value;
+    if (P.w <= 0) return 0;
+    const x = p.dot(u.uFrontN.value) - P.x + 26 * Math.sin(p.x * 0.0061 + p.y * 0.0023 + 1.3) + 14 * Math.sin(p.z * 0.0087 - p.y * 0.0041);
+    const ss = THREE.MathUtils.smoothstep;
+    return P.w * (ss(x, 0, P.z) - ss(x, P.y - 150, P.y));
   }
 
   // The drop's light as an environment map, for anything that reflects.
@@ -646,9 +856,14 @@ export class Water {
   }
 
   updateShafts(camera, focus) {
-    const G = SHAFT_GRID;
-    const inner = Math.max(11, focus + 6);
-    const outer = inner + 15;
+    const k = this.scale;
+    if (this.shaftGain <= 0) {
+      for (const s of this.shafts) s.visible = false;
+      return;
+    }
+    const G = SHAFT_GRID * k;
+    const inner = Math.max(11 * k, focus + 6 * k);
+    const outer = inner + 15 * k;
     const cp = camera.position;
     const cands = this._cands;
     cands.length = 0;
@@ -673,9 +888,9 @@ export class Water {
       if (!c) continue;
       const { i, j } = c;
       const u = s.material.uniforms;
-      const width = 2.5 + 2.0 * hash(i, j, 3);
-      const len = 64;
-      u.uFade.value = THREE.MathUtils.smoothstep(c.dist, inner, inner + 3) * (1 - THREE.MathUtils.smoothstep(c.dist, outer - 4, outer));
+      const width = (2.5 + 2.0 * hash(i, j, 3)) * k;
+      const len = 64 * k;
+      u.uFade.value = this.shaftGain * THREE.MathUtils.smoothstep(c.dist, inner, inner + 3 * k) * (1 - THREE.MathUtils.smoothstep(c.dist, outer - 4 * k, outer));
       u.uSeed.value = hash(i, j, 4) * 10;
       u.uWidth.value = width;
       const n = hash(i, j, 5);
@@ -688,7 +903,7 @@ export class Water {
       right.normalize();
       normal.crossVectors(right, up);
       s.matrix.makeBasis(right.multiplyScalar(width), along.copy(up).multiplyScalar(len), normal);
-      s.matrix.setPosition(c.x, cp.y + 0.5 * len * up.y - 6, c.z);
+      s.matrix.setPosition(c.x, cp.y + 0.5 * len * up.y - 6 * k, c.z);
       s.matrixWorldNeedsUpdate = true;
     }
   }

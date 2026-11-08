@@ -643,20 +643,29 @@ class Flagellum {
 //     sites.sdh[0] in the membrane (succinate -> fumarate happens there).
 //   The complexes sit in membrane patches (this.patches: { centre, members, radius }); the
 //   volume's `rafts` are the same patches, which CellPass draws as thicker inner membrane.
+//
+// Envelope state CellPass reads (see its descriptor notes): `wall` (0..1; rods default to walled,
+// the hero to none), `pinch` (division), `ghost` (dying, 0..1). A walled cell is held still by its
+// wall, so its flow is calmer (setWall keeps the two together). `H` > 0.5 makes a longer rod (a rod
+// about to divide: H = 1.5 is two standard rods end to end). `wobbleBoost` multiplies the skin's
+// ripple (the opening's tremble).
 export class Bacterium {
-  constructor({ hero = false, seed = 1, flagella = hero ? 6 : 4, scale = 1, tint } = {}) {
+  constructor({ hero = false, seed = 1, flagella = hero ? 6 : 4, scale = 1, tint, H = 0.5, wall } = {}) {
     const rng = mulberry32(seed);
     this.hero = hero;
     this.kind = hero ? CELL_KIND.hero : CELL_KIND.rod;
     this.R = 0.5;
-    this.H = 0.5;
+    this.H = H;
     this.R_INNER = R_INNER;
     this.tint = new THREE.Color(tint ?? (hero ? ORGANELLE.jelly : 0xe4f0f8));
     this.group = new THREE.Group();
     this.group.scale.setScalar(scale);
     this.body = new THREE.Group();
     this.group.add(this.body);
-    this.shape = createCellShape({ amp: hero ? 0.085 : 0.07, speed: 0.55, seed: rng() * 10, wobble: 0.006 });
+    this.flowAmp = hero ? 0.085 : 0.07;
+    this.wobbleBoost = 1;
+    this.shape = createCellShape({ amp: this.flowAmp, speed: 0.55, seed: rng() * 10, wobble: 0.006 });
+    this.setWall(wall ?? (hero ? 0 : 1));
     this.anchors = [];
     this.anchorRefs = [];
     this.sites = { pts: [], complexI: [], sdh: [], bo3: [], bd: [], atpSynthase: [], motors: [], ribosomes: [], receptors: null, granules: [] };
@@ -672,6 +681,8 @@ export class Bacterium {
     const energy = hero ? this.energySide() : null;
     if (energy) taken.push(energy.uptake.pos, energy.tca.pos);
     const motorPlaces = scatterOnMembrane(rng, flagella, taken, { minDist: 0.3, zMin: -0.75, zMax: 0.45 });
+    // A long rod: its motors spread along the longer body.
+    if (H !== 0.5) for (const pl of motorPlaces) pl.pos.z += Math.sign(pl.pos.z || 1) * (H - 0.5) * Math.min(Math.abs(pl.pos.z) / 0.5, 1);
     this.motors = new Complexes(this, motorPlaces, {
       geo: geo('motorStator'),
       color: 0x2f9e86,
@@ -956,6 +967,12 @@ export class Bacterium {
     setDent(this.shape, i, opts);
   }
 
+  // A wall holds the cell's shape: walled, the slow flow is a quarter of a soft cell's.
+  setWall(w) {
+    this.wall = w;
+    this.shape.uFlowAmp.value = this.flowAmp * (1 - 0.75 * w);
+  }
+
   get visible() {
     return this.group.visible;
   }
@@ -966,7 +983,7 @@ export class Bacterium {
   update(dt, { thrust = 0, bundle = 0.6, omega = 20 } = {}) {
     const sh = this.shape;
     sh.uThrust.value += (thrust - sh.uThrust.value) * (1 - Math.exp(-dt / 0.25));
-    sh.uWobble.value = 0.006 + 0.004 * sh.uThrust.value;
+    sh.uWobble.value = (0.006 + 0.004 * sh.uThrust.value) * this.wobbleBoost;
     this.followTurn(dt);
     syncShape(sh, this.body);
 
@@ -1016,6 +1033,39 @@ export class Bacterium {
     }
     if (changed) this.ribosomeMesh.instanceColor.needsUpdate = true;
   }
+}
+
+// ------------------------------------------------------------------------------------- husk
+// A shed wall: the empty peptidoglycan sacculus a cell has squeezed out of, a CellPass descriptor
+// with nothing inside. It starts exactly where `of` is (same world transform, just outside its outer
+// membrane). Add `group` to the scene and the husk itself to CellPass; `wall` is how present it is
+// (0..1), `split` how far open its slit is (along its +y side). Call update() each frame.
+export function createHusk(of, { tint = 0xf1f1e6, seed = 7 } = {}) {
+  const group = new THREE.Group();
+  of.body.updateWorldMatrix(true, false);
+  of.body.matrixWorld.decompose(group.position, group.quaternion, group.scale);
+  const body = new THREE.Group();
+  group.add(body);
+  const shape = createCellShape({ amp: 0.012, speed: 0.3, seed, wobble: 0 });
+  return {
+    group,
+    body,
+    shape,
+    kind: CELL_KIND.rod,
+    R: of.R + 0.025,
+    H: of.H,
+    tint: new THREE.Color(tint),
+    volume: null,
+    husk: true,
+    wall: 0,
+    split: 0,
+    get visible() {
+      return group.visible;
+    },
+    update() {
+      syncShape(shape, body);
+    },
+  };
 }
 
 // ------------------------------------------------------------------------------------- cocci

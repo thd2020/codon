@@ -75,6 +75,11 @@ const fragmentShader = /* glsl */ `
   uniform vec4 uFlow[MAXC];     // amp, speed, seed, thrust
   uniform vec4 uTurnW[MAXC];    // turn.x, turn.y, wobble, proton glow (0..1)
   uniform vec3 uTint[MAXC];
+  uniform vec4 uCellX[MAXC];    // wall, pinch (division), husk, split (husks) or ghost (others)
+  uniform vec4 uHeroX;          // interior mute, squeeze depth (µm), squeeze plane offset, squeeze width
+  uniform vec3 uSqueezeN;       // the squeeze plane's normal (hero body space)
+  uniform float uCellS[MAXC];   // tear water round the cell (the opening's salt front): 0..1, < 0 none
+  uniform vec3 uSaltWarm, uSaltCool; // what a cell in tear water / in the mixed water is tinted by
 
   // Hero cell detail (cell 0 when uHero == 1), all in reference body space.
   uniform int uHero;
@@ -128,6 +133,9 @@ const fragmentShader = /* glsl */ `
   float gR, gH, gOff;     // body radius, core half-length, depth of the inner film below the outer
   int gKind;
   float gFd[NF];          // signed distance (µm) to each film at this sample; 1e3 = none
+  vec4 gX;                // this cell's uCellX
+  vec3 gTintC;            // this cell's tint
+  float gInK, gDesat;     // interior matter: strength, and how far its colour is muted to the tint
 
   // ---------------------------------------------------------------- noise
   float hash13(vec3 p) {
@@ -241,6 +249,10 @@ const fragmentShader = /* glsl */ `
   struct S { float sigma; vec3 rad; vec3 emit; float hint; };
 
   void addD(inout S s, float sigma, vec3 rad, vec3 emit) {
+    // A walled or dying cell's insides are fainter and paler (gInK, gDesat; 1 and 0 normally).
+    sigma *= gInK;
+    emit *= gInK;
+    rad = mix(rad, dot(rad, vec3(0.2126, 0.7152, 0.0722)) * gTintC, gDesat);
     float w = sigma / max(s.sigma + sigma, 1e-6);
     s.rad = mix(s.rad, rad, w);
     s.emit += emit;
@@ -295,10 +307,37 @@ const fragmentShader = /* glsl */ `
     return false;
   }
 
+  // Binary fission (pinch 0..1): a furrow at z = 0 deepens until the rod is two. The two daughter
+  // capsules tile the parent exactly, so at pinch 1 a rod of core half-length H is two rods of
+  // (H - R) / 2, centred at +-(H + R) / 2.
+  float divideSd(vec3 p, float R, float H, float pinch) {
+    float zc = 0.5 * (H + R), hd = max(0.5 * (H - R), 0.0);
+    float a = capsuleSdH(p - vec3(0.0, 0.0, zc), R, hd);
+    float b = capsuleSdH(p + vec3(0.0, 0.0, zc), R, hd);
+    float k = max((1.0 - pinch) * 1.2 * R, 1e-4);
+    float h = clamp(0.5 + 0.5 * (b - a) / k, 0.0, 1.0);
+    float d = mix(b, a, h) - k * h * (1.0 - h);
+    return mix(capsuleSdH(p, R, H), d, smoothstep(0.0, 0.3, pinch));
+  }
+
   float bodySd(bool hero, vec3 p, float R, float H, float wob, inout float slope) {
-    float sd = capsuleSdH(p, R, H);
+    float sd = gX.y > 0.0 ? divideSd(p, R, H, gX.y) : capsuleSdH(p, R, H);
     sd += (sin(p.z * 4.1 + gT * 2.3) * 0.5 + sin(p.x * 6.3 - gT * 1.7 + p.y * 5.2) * 0.35 + sin(p.y * 7.7 + gT * 2.9) * 0.25) * wob;
-    if (hero) sd += dents(p, slope);
+    if (hero) {
+      sd += dents(p, slope);
+      // Squeezing through a slit: a waist where the body passes the plane, deepest mid-slit and
+      // easing to nothing toward the poles (the slit is a lens along the rod).
+      if (uHeroX.y > 0.0) {
+        float w = uHeroX.w;
+        float s = (dot(p, uSqueezeN) - uHeroX.z) / w;
+        if (abs(s) < 4.0) {
+          float Lt = H + R + 0.3;
+          float zt = p.z / Lt;
+          sd += uHeroX.y * max(1.0 - zt * zt, 0.0) * exp(-s * s);
+          slope = max(slope, 1.0 + uHeroX.y * (0.86 / w + 2.0 / Lt));
+        }
+      }
+    }
     return sd;
   }
   vec3 bodyGrad(bool hero, vec3 p, float R, float H, float wob) {
@@ -338,6 +377,19 @@ const fragmentShader = /* glsl */ `
     return (f == 0 && gKind == 2) ? max(WALL_H, gSig) : gSig;
   }
 
+  // A shed wall (husk): the slit it split along, on its +y side, a lens along the rod (1 = open).
+  // lip: how near the cut edge this point is (1 on the lip, 0 a little way off), where the torn
+  // wall curls and catches the light.
+  float huskCut(vec3 p, out float lip) {
+    lip = 0.0;
+    if (p.y <= 0.0) return 0.0;
+    float L = gH + 0.62 * gR;
+    float hw = 0.36 * gR * gX.w * sqrt(max(1.0 - (p.z * p.z) / (L * L), 0.0));
+    float d = abs(p.x) - hw;
+    lip = exp(-pow(max(d, 0.0) / max(0.05, 1.5 * gFp), 2.0)) * smoothstep(0.0, 0.06, hw);
+    return clamp(-d / max(gFp, 1e-4) + 0.5, 0.0, 1.0);
+  }
+
   // What a film looks like where the ray crosses it: how dense it is (body, per µm of the slab), the
   // colour of its matter, and the light it reflects (per crossing). Each film reflects the drop
   // through thin-film interference; its matter takes the colour of what it mirrors (sky above, teal
@@ -345,9 +397,11 @@ const fragmentShader = /* glsl */ `
   void filmLook(int i, bool hero, int f, vec3 p, out float body, out vec3 rad, out vec3 refl, out vec3 nOut) {
     vec3 n;
     float shine, tintMix, thick;
+    float satin = 0.0;
     vec3 tint;
     if (f < 2) {
-      if (hero && nearDent(p)) n = normalize(bodyGrad(hero, p, gR, gH, uTurnW[i].z));
+      bool nearWaist = uHeroX.y > 0.0 && abs(dot(p, uSqueezeN) - uHeroX.z) < 3.0 * uHeroX.w;
+      if ((hero && (nearDent(p) || nearWaist)) || gX.y > 0.0) n = normalize(bodyGrad(hero, p, gR, gH, uTurnW[i].z));
       else n = normalize(vec3(p.xy, p.z - clamp(p.z, -gH, gH)) + vec3(1e-5, 0.0, 0.0));
       // film thickness swirls like a soap film: a slow drift and a finer eddy on top
       vec3 sp = p * 3.4 + vec3(0.0, gT * 0.11, gT * 0.07) + 0.7 * sin(p.yzx * 4.0 + gT * 0.23);
@@ -359,8 +413,29 @@ const fragmentShader = /* glsl */ `
         } else {        // ...and the one membrane under it
           body = uFilm.y; shine = uFilmShine.y; tint = uInnerTint; tintMix = 0.18; thick += 60.0;
         }
+      } else if (f == 0 && gX.z > 0.5) {
+        // A shed wall: a clear glassy shell (x: how present it is) with a faint woven mesh, the
+        // glycan strands running round the rod, and the slit the cell left through.
+        float wv = smoothstep(0.82, 1.0, abs(sin(atan(p.y, p.x) * 18.0))) * smoothstep(0.7, 1.0, abs(sin(p.z * 22.0)));
+        wv *= smoothstep(0.03, 0.012, gFp);
+        float lip;
+        float keep = gX.x * (1.0 - huskCut(p, lip));
+        body = uFilm.x * 1.1 * (1.0 + 0.8 * wv + 1.6 * lip) * keep; shine = uFilmShine.x * 1.15 * (1.0 + 2.0 * lip) * keep; tint = uTint[i]; tintMix = 0.42 * (1.0 - 0.6 * lip);
+        thick = mix(thick, 480.0, 0.6) + 140.0 * wv + 260.0 * lip;
       } else if (f == 0) {
         body = uFilm.x; shine = uFilmShine.x; tint = uTint[i]; tintMix = 0.36;
+        // The wall (peptidoglycan sacculus): a calm satin band instead of a swirling soap film.
+        body *= 1.0 + 0.8 * gX.x;
+        shine *= mix(1.0, 0.55, gX.x);
+        thick = mix(thick, 520.0, 0.5 * gX.x);
+        tintMix = mix(tintMix, 0.6, 0.5 * gX.x);
+        satin = gX.x;
+        // The furrow of a dividing rod: a bright iridescent collar.
+        if (gX.y > 0.0) {
+          float collar = gX.y * exp(-p.z * p.z / (0.04 * gR * gR));
+          shine *= 1.0 + 2.0 * collar;
+          thick += 240.0 * collar;
+        }
       } else {
         body = uFilm.y; shine = uFilmShine.y; tint = uInnerTint; tintMix = 0.18; thick += 60.0;
         // Lipid rafts: where the hero's complexes gather, the inner membrane is thicker and
@@ -406,6 +481,8 @@ const fragmentShader = /* glsl */ `
     vec3 nn = c < 0.0 ? -n : n;
     vec3 rdir = reflect(-gView, nn);
     vec3 hue = mix(thinFilm(ac, thick), tint, tintMix);
+    // a wall's sheen is satin: pearly, with little of a soap film's colour
+    hue = mix(hue, vec3(dot(hue, vec3(0.3333))) * 0.35 + tint * 0.65, 0.7 * satin);
     rad = hue * (envSky(rdir) * 0.82 + uSunColor * 0.18 * max(dot(nn, gSun), 0.0)) * uLight;
     // One crossing reflects its Fresnel share. A film seen from inside the cell reflects only
     // faintly, so the far side never clouds the view.
@@ -413,6 +490,16 @@ const fragmentShader = /* glsl */ `
     float side = c > 0.0 ? 1.0 : 0.3;
     refl = envRef(rdir) * hue * (fres * shine * side);
     nOut = n;
+    // A dying cell thins toward the water like breath on glass: its envelope stays a while as a
+    // pale, thinning bubble (its insides go first; see field()).
+    float ghost = gX.z > 0.5 ? 0.0 : gX.w;
+    if (ghost > 0.0) {
+      float k = 1.0 - ghost * ghost;
+      body *= k;
+      refl *= k;
+      rad = mix(rad, uFogColor * uLight * 1.04, 0.7 * ghost);
+      refl = mix(refl, vec3(dot(refl, vec3(0.3333))), 0.7 * ghost);
+    }
   }
 
   // ---------------------------------------------------------------- shapes inside the cell
@@ -691,15 +778,19 @@ const fragmentShader = /* glsl */ `
     float R = gR, H = gH;
     vec3 qn = p / vec3(0.2 * R / 0.5, 0.2 * R / 0.5, 0.36 * R / 0.5 + H * 0.4);
     float e = dot(qn, qn);
-    if (e < 1.3) {
+    // From far off (a cell only a few pixels across) the strands would swell to a blob: the
+    // nucleoid fades instead, and a distant cell is its pale films.
+    float far = smoothstep(0.06, 0.15, gFp);
+    if (e < 1.3 && far < 1.0) {
       const float F = 6.5;
       vec3 w = p * F + float(i) * 13.7 + 0.25 * sin(p.yzx * 4.0 + gT * 0.15);
       float rT = max(0.004, 0.8 * gFp);
       float r; vec3 n;
       float cov = thread(w, F, rT * smoothstep(1.3, 1.1, e), 0.94, r, n);
       if (cov > 0.0) {
-        vec3 alb = mix(uDnaColor, uTint[i], 0.2);
-        addD(s, 1200.0 * cov, shade(alb, n) + alb * 0.12, vec3(0.0));
+        // walled, the insides are quieter: a paler, sparser nucleoid
+        vec3 alb = mix(uDnaColor, uTint[i], 0.2 + 0.35 * gX.x);
+        addD(s, 1200.0 * cov * (1.0 - far) * (1.0 - 0.45 * gX.x), shade(alb, n) + alb * 0.12, vec3(0.0));
       }
       s.hint = min(s.hint, max(r - rT, 0.0) * 0.4);
     } else s.hint = min(s.hint, (sqrt(e) - 1.14) * 0.18);
@@ -707,7 +798,7 @@ const fragmentShader = /* glsl */ `
 
   S field(int i, bool hero, vec3 p) {
     S s; s.sigma = 0.0; s.rad = vec3(0.0); s.emit = vec3(0.0); s.hint = 1e3;
-    float wob = uTurnW[i].z;
+    float wob = uTurnW[i].z * (1.0 - 0.85 * gX.x);   // a wall holds the skin still
     float slope = 1.0;
     float sd0 = bodySd(hero, p, gR, gH, wob, slope);
     float sd = sd0 / slope, sdi = (sd0 + gOff) / slope;   // safe (under-) estimates
@@ -717,7 +808,7 @@ const fragmentShader = /* glsl */ `
       sd = sd0 / gl; sdi = (sd0 + gOff) / gl;
     }
     gFd[0] = gKind == 2 ? sd + WALL_H : sd;
-    gFd[1] = sdi;
+    gFd[1] = gX.z > 0.5 ? 1e3 : sdi;
     for (int k = 0; k < MAXV; k++) {
       float rv = uVesicle[k].w;
       if (!hero || rv <= 0.0 || uVesicleState[k].y < 0.01) { gFd[2 + 2 * k] = 1e3; gFd[3 + 2 * k] = 1e3; continue; }
@@ -726,6 +817,11 @@ const fragmentShader = /* glsl */ `
       gFd[3 + 2 * k] = dv - rv + 0.045;
     }
 
+    if (gX.z > 0.5) return s;   // a husk is its wall alone
+
+    // A dying cell (ghost) goes hypodense: everything inside it fades first, and pales toward the
+    // water, so a dead cell is its thinning envelope, never its nucleoid.
+    gInK = pow(1.0 - gX.w, 2.5);
     // Periplasm: faintly lit by the proton gradient across the inner membrane.
     if (gKind != 2 && sd < 0.0 && sdi > 0.0) {
       float peri = smoothstep(0.0, -gSig, sd) * smoothstep(0.0, gSig, sdi);
@@ -733,9 +829,34 @@ const fragmentShader = /* glsl */ `
     }
 
     if (sdi < 0.02) {
-      if (hero) heroInterior(s, p, sdi);
-      else simpleInterior(s, i, p);
+      if (hero) {
+        // Walled (or still recovering from it), the hero's insides are muted to a plain rod's.
+        float mute = max(gX.x, uHeroX.x);
+        gInK *= mix(1.0, 0.35, mute);
+        gDesat = 0.6 * mute;
+        heroInterior(s, p, sdi);
+      } else {
+        // a dividing rod has two nucleoids, one in each half
+        vec3 pn = p;
+        float hn = gH;
+        if (gX.y > 0.0) {
+          float sep = smoothstep(0.05, 0.6, gX.y);
+          pn.z = mix(p.z, abs(p.z) - 0.5 * (gH + gR), sep);
+          hn = mix(gH, max(0.5 * (gH - gR), 0.0), sep);
+        }
+        float h0 = gH;
+        gH = hn;
+        if (gX.w > 0.0) {
+          gDesat = gX.w;
+          gTintC = mix(gTintC, uFogColor * 1.25, gX.w);
+        }
+        simpleInterior(s, i, pn);
+        gH = h0;
+        gTintC = uTint[i];
+      }
+      gDesat = 0.0;
     }
+    gInK = 1.0;
     return s;
   }
 
@@ -829,6 +950,10 @@ const fragmentShader = /* glsl */ `
       vec4 fl = uFlow[i];
       vec2 turn = uTurnW[i].xy;
       gR = g.x; gH = g.y; gKind = int(g.z + 0.5);
+      gX = uCellX[i];
+      gTintC = uTint[i];
+      gInK = 1.0;
+      gDesat = 0.0;
       gOff = gKind == 2 ? 2.0 * WALL_H + 0.004 : 0.08 * gR / 0.5;   // periplasm: real ~25 nm, drawn 3.2x
 
       // March only inside a capsule that holds the cell however far the flow pushes it.
@@ -933,9 +1058,18 @@ const fragmentShader = /* glsl */ `
           cellTrans *= 1.0 - aa;
         }
       }
-      // The cell sits in the same water as everything else: fog it like the rest of the scene.
+      // The cell sits in the same water as everything else: fog it like the rest of the scene. In
+      // the opening, a cell in tear water is warmer and a touch more luminous, one in the mixed
+      // water cooler and greyer.
       float fogF = fogFactor(bestT);
-      cellAccum = mix(cellAccum, uFogColor * (1.0 - cellTrans), fogF);
+      vec3 fogC = uFogColor;
+      float salt = uCellS[i];
+      if (salt >= 0.0) {
+        vec3 k = mix(uSaltCool, uSaltWarm, salt);
+        cellAccum *= k;
+        fogC *= mix(vec3(1.0), k, 0.6);
+      }
+      cellAccum = mix(cellAccum, fogC * (1.0 - cellTrans), fogF);
       accum += trans * cellAccum;
       trans *= cellTrans;
       if (trans < 0.01) break;
@@ -1019,6 +1153,22 @@ let warnedSun = false;
 //   kind: CELL_KIND.*, R (0.5 for rods), H (core half-length, 0.5 for rods, 0 for cocci)
 //   tint: THREE.Color (the outer film's own faint colour; a coccus's wall colour)
 //   visible (optional): false skips it
+//   wall (optional, 0..1): a peptidoglycan wall, drawn as a calm satin band with a still skin and,
+//     on the hero, muted insides. Default 1 for rods, 0 for the hero and cocci (whose Gram-positive
+//     wall is drawn by their kind).
+//   pinch (optional, 0..1): binary fission. A rod with core half-length H divides at z = 0 into two
+//     rods of (H - R) / 2 at +-(H + R) / 2 (H = 1.5 makes two standard rods).
+//   ghost (optional, 0..1): dying hypodense, its insides and films fading toward the water; at 1
+//     it is no longer drawn.
+//   husk (optional): true for a shed wall: one glassy film with a faint hoop weave and nothing
+//     inside; `wall` is then how present it is (0 not drawn), `split` (0..1) how far open the slit
+//     along its +y side is.
+//   hero only, intro: mute (0..1) mutes the insides as a wall does; squeeze { normal, offset, depth,
+//     width } draws a waist where the body passes the plane dot(p, normal) = offset (body space),
+//     deepest mid-rod and easing to nothing at the poles.
+//   salt (optional, 0..1; the opening): how much tear water the cell sits in. A cell in tear water
+//     is tinted warm and luminous (uSaltWarm), one in the mixed water cool and grey (uSaltCool);
+//     undefined leaves the cell as it is (the game). setSaltTints(warm, cool) changes the two.
 //   hero only: cell.volume = { nucleoid, nucleoidScale, plasmid, plasmidRadius, granules[{pos, radius,
 //     kind}], tca{center, radius, axis, activity, enzymes?[{pos, radius, lobes}] (7; lobes = subunits
 //     drawn, 1..4)}, glycolysis (centre), glycolysisEnzymes?[{pos, radius, lobes}] (9, G6P end
@@ -1060,6 +1210,12 @@ export class CellPass extends Pass {
       uFlow: { value: v4(MAX_CELLS) },
       uTurnW: { value: v4(MAX_CELLS) },
       uTint: { value: Array.from({ length: MAX_CELLS }, () => new THREE.Color(1, 1, 1)) },
+      uCellX: { value: v4(MAX_CELLS) },
+      uHeroX: { value: new THREE.Vector4(0, 0, 0, 0.16) },
+      uSqueezeN: { value: new THREE.Vector3(0, 1, 0) },
+      uCellS: { value: new Array(MAX_CELLS).fill(-1) },
+      uSaltWarm: { value: new THREE.Vector3(1.07, 1.03, 0.95) },
+      uSaltCool: { value: new THREE.Vector3(0.95, 0.98, 1.03) },
       uHero: { value: 0 },
       uDentC: { value: v4(MAX_DENTS) },
       uDentN: { value: v4(MAX_DENTS) },
@@ -1115,6 +1271,12 @@ export class CellPass extends Pass {
 
   get quality() {
     return this.uniforms.uQuality.value;
+  }
+
+  // The two tints a cell's `salt` (the opening's salt front) mixes between: [r, g, b] multipliers.
+  setSaltTints(warm, cool) {
+    if (warm) this.uniforms.uSaltWarm.value.set(...warm);
+    if (cool) this.uniforms.uSaltCool.value.set(...cool);
   }
   set quality(q) {
     this.uniforms.uQuality.value = THREE.MathUtils.clamp(q, 0.35, 1);
@@ -1193,7 +1355,7 @@ export class CellPass extends Pass {
     list.length = 0;
     let hero = null;
     for (const cell of this.cells) {
-      if (cell.visible === false) continue;
+      if (cell.visible === false || (!cell.husk && (cell.ghost ?? 0) >= 1) || (cell.husk && !(cell.wall > 0))) continue;
       cell.body.updateWorldMatrix(true, false);
       _center.setFromMatrixPosition(cell.body.matrixWorld);
       const scale = _scale.setFromMatrixScale(cell.body.matrixWorld).x;
@@ -1237,8 +1399,17 @@ export class CellPass extends Pass {
       u.uFlow.value[n].set(sh.uFlowAmp.value, sh.uFlowSpeed.value, sh.uSeed.value, sh.uThrust.value);
       u.uTurnW.value[n].set(sh.uTurn.value.x, sh.uTurn.value.y, sh.uWobble.value, cell.volume?.protonGlow ?? 0.3);
       u.uTint.value[n].copy(cell.tint);
+      // wall: rods are walled unless they say otherwise, the hero is not; a husk carries its split,
+      // any other cell its ghost (how far it has faded).
+      const husk = cell.husk ? 1 : 0;
+      u.uCellX.value[n].set(cell.wall ?? (cell.kind === CELL_KIND.rod ? 1 : 0), cell.pinch ?? 0, husk, husk ? (cell.split ?? 0) : (cell.ghost ?? 0));
+      u.uCellS.value[n] = cell.salt ?? -1;
       if (cell.kind === CELL_KIND.hero && n === 0) {
         u.uHero.value = 1;
+        // Intro only: interior muted after the wall is shed, and the waist of a squeeze through a slit.
+        const sq = cell.squeeze;
+        u.uHeroX.value.set(cell.mute ?? 0, sq?.depth ?? 0, sq?.offset ?? 0, sq?.width ?? 0.16);
+        if (sq?.normal) u.uSqueezeN.value.copy(sq.normal);
         for (let k = 0; k < MAX_DENTS; k++) {
           u.uDentC.value[k].copy(sh.uDentC.value[k]);
           u.uDentN.value[k].copy(sh.uDentN.value[k]);

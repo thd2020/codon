@@ -31,26 +31,31 @@ const DESAT = 0.15;
 
 // Inverse of three.js NeutralToneMapping (Khronos PBR Neutral), exact: a display colour -> the
 // scene-linear colour that tone-maps to it at this exposure. For other curves it is a plain
-// sRGB -> linear conversion.
-export function sceneColor(hex, gain = 1) {
-  const c = new THREE.Color(hex); // linear
-  const v = [c.r, c.g, c.b];
+// sRGB -> linear conversion. `out` (optional) receives the result instead of a new Color.
+const _sc = new THREE.Color();
+const _sv = [0, 0, 0];
+export function sceneColor(hex, gain = 1, out = null) {
+  const c = _sc.set(hex); // linear
+  const v = _sv;
+  v[0] = c.r;
+  v[1] = c.g;
+  v[2] = c.b;
   if (LOOK.toneMapping === 'Neutral') {
     // Pure display white is never reached by the curve: cap it just below.
-    const cap = Math.min(0.97 / Math.max(...v), 1);
+    const cap = Math.min(0.97 / Math.max(v[0], v[1], v[2]), 1);
     for (let i = 0; i < 3; i++) v[i] *= cap;
-    const P = Math.max(...v);
+    const P = Math.max(v[0], v[1], v[2]);
     if (P >= START) {
       const d = 1 - START;
       const peak = (d * d) / (1 - P) - d + START;
       const g = 1 - 1 / (DESAT * (peak - P) + 1);
       for (let i = 0; i < 3; i++) v[i] = ((v[i] - g * P) / (1 - g)) * (peak / P);
     }
-    const m = Math.min(...v);
+    const m = Math.min(v[0], v[1], v[2]);
     const offset = m + 0.04 >= 0.08 ? 0.04 : Math.sqrt(Math.max(m, 0) / 6.25) - m;
     for (let i = 0; i < 3; i++) v[i] += offset;
   }
-  return new THREE.Color(v[0], v[1], v[2]).multiplyScalar(gain / LOOK.exposure);
+  return (out ?? new THREE.Color()).setRGB(v[0], v[1], v[2]).multiplyScalar(gain / LOOK.exposure);
 }
 
 export const LOOK = {
@@ -76,6 +81,84 @@ export const LOOK = {
   cellEnvironment: null, // filled below, once sceneColor can run
 };
 
+// What the films mirror overhead in the morning: the meniscus with its light.
+const FILM_SKY = 0xf5f9f5;
+DROP.film = FILM_SKY;
+
+// The first light of the first morning (display sRGB), before the sun is properly up: the same
+// drop in blue-lilac, the sun low (about 12° up) on the morning sun's azimuth, no rays yet. The
+// opening lerps it into DROP (lerpDrop) and the in-run dew clock and Act IV's dusk can reuse it.
+export const DAWN = {
+  meniscus: 0xd3d9ec,
+  sky: 0xd6deee,
+  horizon: 0xcad3e6,
+  haze: 0xe0d6ef,
+  deep: 0x9fb8d2,
+  abyss: 0xaca6d6,
+  sun: 0xffd9bd,
+  film: 0xe9ecf6,
+  sunDir: [0.35, 0.12, 0.45],
+  lens: { lift: [0.5, 0.47, 0.66], liftAmount: 0.08, warmth: 0.0 },
+};
+
+const KEYS = ['meniscus', 'sky', 'horizon', 'haze', 'deep', 'abyss', 'sun', 'film'];
+// Two display hex colours mixed in display space.
+export function lerpHex(a, b, s) {
+  let out = 0;
+  for (const sh of [16, 8, 0]) {
+    const ca = (a >> sh) & 255, cb = (b >> sh) & 255;
+    out |= Math.round(ca + (cb - ca) * s) << sh;
+  }
+  return out;
+}
+const asDir = (d, out = new THREE.Vector3()) => (Array.isArray(d) ? out.set(d[0], d[1], d[2]) : out.copy(d)).normalize();
+const _da = new THREE.Vector3(), _db = new THREE.Vector3();
+
+// A drop between two palettes (s: 0 = a, 1 = b), lerped in display colour and returned as display
+// hex, with the sun's direction and the lens grade's lift and warmth. s = 1 returns b's own values
+// (DROP's, if b is LOOK.drop), so a lerp that ends there leaves the morning exactly as it was.
+// `out` (optional): an object from an earlier call to fill in again (no allocation per frame).
+export function lerpDrop(a, b, s, out = null) {
+  s = THREE.MathUtils.clamp(s, 0, 1);
+  out ??= {};
+  const la = a.lens ?? LOOK.lens, lb = b.lens ?? LOOK.lens;
+  for (const k of KEYS) {
+    const ha = a[k] ?? DROP[k], hb = b[k] ?? DROP[k];
+    if (s >= 1) out[k] = hb;
+    else if (s <= 0) out[k] = ha;
+    else out[k] = lerpHex(ha, hb, s);
+  }
+  const da = asDir(a.sunDir ?? LOOK.sunDir, _da), db = asDir(b.sunDir ?? LOOK.sunDir, _db);
+  out.sunDir ??= new THREE.Vector3();
+  out.sunDir.copy(s >= 1 ? db : s <= 0 ? da : da.lerp(db, s).normalize());
+  out.lens ??= { lift: [0, 0, 0], liftAmount: 0, warmth: 0 };
+  for (let i = 0; i < 3; i++) out.lens.lift[i] = la.lift[i] + (lb.lift[i] - la.lift[i]) * s;
+  out.lens.liftAmount = la.liftAmount + (lb.liftAmount - la.liftAmount) * s;
+  out.lens.warmth = la.warmth + (lb.warmth - la.warmth) * s;
+  return out;
+}
+
+// Puts a drop (from lerpDrop, or LOOK.drop itself) on everything that shows it: the water's dome,
+// fog and sun, the light and fog CellPass shares with it, and the lens grade's lift and warmth.
+const _env = { sunDir: new THREE.Vector3(), sunColor: new THREE.Color(), sky: new THREE.Color(), deep: new THREE.Color(), fogColor: new THREE.Color() };
+export function applyDrop(drop, { water = null, cellPass = null, lens = null } = {}) {
+  const sunDir = drop.sunDir ? asDir(drop.sunDir, _env.sunDir) : _env.sunDir.copy(LOOK.sunDir);
+  water?.setPalette(drop, sunDir);
+  if (cellPass) {
+    _env.sunColor.set(drop.sun);
+    sceneColor(drop.film ?? FILM_SKY, 1, _env.sky);
+    sceneColor(drop.deep, 1, _env.deep);
+    sceneColor(drop.horizon, 1, _env.fogColor);
+    cellPass.setEnvironment(_env);
+  }
+  if (lens) {
+    const L = drop.lens ?? LOOK.lens;
+    lens.uniforms.uLift.value.set(...L.lift);
+    lens.uniforms.uLiftAmount.value = L.liftAmount;
+    lens.uniforms.uWarmth.value = L.warmth;
+  }
+}
+
 // What CellPass needs to light and fog cells exactly like the water (scene-linear colours, so they
 // match the dome and FogExp2 after tone mapping). `window` and `sun` describe the two bright
 // features of the sky, and the dome draws them from these same numbers, so a membrane that mirrors
@@ -85,7 +168,7 @@ export const LOOK = {
 LOOK.cellEnvironment = {
   sunDir: LOOK.sunDir.clone(),
   sunColor: new THREE.Color(DROP.sun),
-  sky: sceneColor(0xf5f9f5), // what the films reflect from overhead: the meniscus with its light
+  sky: sceneColor(FILM_SKY), // what the films reflect from overhead: the meniscus with its light
   deep: sceneColor(DROP.deep),
   fogColor: sceneColor(DROP.horizon),
   // Light enough that the hero is never veiled (about 12% at the farthest orbit of 18 µm), strong
@@ -141,6 +224,7 @@ export const LensShader = {
     uVignette: { value: LOOK.lens.vignette },
     uDispersion: { value: LOOK.lens.dispersion },
     uGrain: { value: LOOK.lens.grain },
+    uFlash: { value: 0 }, // 0..1 toward white over the whole frame (the opening's crossing)
   },
   vertexShader: /* glsl */ `
     varying vec2 vUv;
@@ -151,7 +235,7 @@ export const LensShader = {
     uniform float uTime;
     uniform vec2 uRes;
     uniform vec3 uLift;
-    uniform float uLiftAmount, uWarmth, uContrast, uSaturation, uClarity, uVignette, uDispersion, uGrain;
+    uniform float uLiftAmount, uWarmth, uContrast, uSaturation, uClarity, uVignette, uDispersion, uGrain, uFlash;
     varying vec2 vUv;
 
     float luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
@@ -196,6 +280,8 @@ export const LensShader = {
       vec2 g = floor(vUv * uRes) + fract(uTime * 7.13) * vec2(97.0, 57.0);
       float n = fract(sin(dot(g, vec2(12.9898, 78.233))) * 43758.5453) + fract(sin(dot(g + 17.0, vec2(39.346, 11.135))) * 24634.6345) - 1.0;
       col += n * uGrain * (0.4 + 0.6 * (1.0 - abs(l * 2.0 - 1.0)));
+      // The flash limit: never brighter than 0.9 of display white.
+      col = mix(col, max(col, vec3(0.9)), clamp(uFlash, 0.0, 1.0));
       gl_FragColor = vec4(clamp(col, 0.0, 1.0), 1.0);
     }
   `,
