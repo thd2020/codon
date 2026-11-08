@@ -164,15 +164,15 @@ const YARD = /* glsl */ `
   uniform vec4 uSitA[8], uSitB[8]; // the figure's limbs: endpoints (relative to the bead), radii in w
   uniform vec4 uSitHead;           // head: centre, radius
   uniform vec4 uSitGlint;          // the brass loupe in the lap: position, brightness
-  const float Y_LOW = -245.0, Y_STEP = -60.0, Z_STEP = -950.0, Z_HOUSE = -3500.0, Y_EAVE = 2700.0;
+  const float Y_LOW = -245.0, Y_STEP = -175.0, Z_STEP = -1050.0, Z_HOUSE = -5000.0, Y_EAVE = 2300.0;
   vec3 yardLit(vec3 alb, vec3 n) { return alb * skyLight(n); }
   vec3 houseColor(vec3 p) {
     // Stucco: lilac in the shade of the dawn sky, warming where the glow reaches it, and darker
     // toward the ground. A window lit from inside, its frame and glazing bars soft (no lines).
     vec3 alb = mix(uWall, uWallLit, 0.55 + 0.45 * vn2(p.xy * 0.002));
     vec3 c = yardLit(alb, vec3(0.0, 0.0, 1.0)) * (0.75 + 0.25 * smoothstep(Y_STEP, 900.0, p.y));
-    vec2 w = p.xy - vec2(420.0, 700.0);
-    vec2 hw = vec2(620.0, 540.0);
+    vec2 w = p.xy - vec2(1250.0, 620.0);
+    vec2 hw = vec2(520.0, 470.0);
     vec2 e = abs(w) - hw;
     float inWin = 1.0 - smoothstep(-30.0, 10.0, max(e.x, e.y));
     // Glazing bars, as soft darker bands.
@@ -181,7 +181,7 @@ const YARD = /* glsl */ `
     vec3 room = uWin * (0.75 + 0.6 * exp(-dot(w - vec2(-260.0, -180.0), w - vec2(-260.0, -180.0)) / 120000.0));
     c = mix(c, mix(room, c * 0.7, bars * 0.85), inWin);
     // A second window further along, unlit: it mirrors the sky.
-    vec2 w2 = p.xy - vec2(-1700.0, 900.0);
+    vec2 w2 = p.xy - vec2(-900.0, 1000.0);
     float in2 = 1.0 - smoothstep(-30.0, 10.0, max(abs(w2.x) - 420.0, abs(w2.y) - 520.0));
     c = mix(c, skyColor(normalize(vec3(0.15, 0.55, 1.0))) * 0.62, in2);
     return c;
@@ -223,12 +223,12 @@ const YARD = /* glsl */ `
         c = yardLit(uGravel * (0.85 + 0.25 * vn2(p.xz * 0.05)), vec3(0.0, 1.0, 0.0));
       }
     }
-    if (tb < 1e8) c = mix(c, uYardHaze * uExpo, (1.0 - exp(-tb * 0.00011)) * 0.7);
+    if (tb < 1e8) c = mix(c, uYardHaze * uExpo, (1.0 - exp(-tb * 0.00006)) * 0.5);
     return c;
   }
   // The child on the step, as the drops see it: a dark figure against the house and the sky.
   vec3 sitFigure(vec3 ro, vec3 d, vec3 c) {
-    float m = 0.0, best = 0.0;
+    float m = 0.0, core = 0.0, best = 0.0;
     vec3 nb = vec3(0.0, 1.0, 0.0);
     for (int i = 0; i < 8; i++) {
       vec4 A = uSitA[i], Bc = uSitB[i];
@@ -244,6 +244,7 @@ const YARD = /* glsl */ `
       float k = 1.0 - smoothstep(r - soft, r + soft, dd);
       if (k > best) { best = k; nb = q / max(dd, 1e-3); }
       m = max(m, k);
+      core = max(core, 1.0 - smoothstep(0.72 * r - soft, 0.72 * r + soft * 4.0, dd));
     }
     {
       vec3 oc = ro - uSitHead.xyz;
@@ -254,10 +255,14 @@ const YARD = /* glsl */ `
       float k = (1.0 - smoothstep(uSitHead.w - soft, uSitHead.w + soft, h)) * step(0.0, t);
       if (k > best) { best = k; nb = normalize(oc - d * b); }
       m = max(m, k);
+      core = max(core, (1.0 - smoothstep(0.72 * uSitHead.w - soft, 0.72 * uSitHead.w + soft * 4.0, h)) * step(0.0, t));
     }
-    // Lit from the sky above, a warm rim where the glow catches the edge.
-    vec3 sil = uChildCol * (0.72 + 0.5 * max(nb.y, 0.0));
-    sil += uLightGlow * vec3(1.0, 0.7, 0.5) * 0.35 * pow(max(dot(nb, glowL()), 0.0), 2.0) * uExpo;
+    // A silhouette: lit a little from the sky above, a warm rim where the glow catches it, and the
+    // window's light wrapping its outer edge from behind (only the outer edge: where one limb lies
+    // over another there is no rim, so it stays one figure, not an assembly of parts).
+    vec3 sil = uChildCol * (0.78 + 0.3 * max(nb.y, 0.0));
+    sil += uLightGlow * vec3(1.0, 0.7, 0.5) * 0.25 * pow(max(dot(nb, glowL()), 0.0), 2.0) * uExpo;
+    sil += uWin * 0.1 * clamp(m - core, 0.0, 1.0);
     c = mix(c, sil, m * uSit);
     // The brass in the lap: a point that catches the sky.
     vec3 og = ro - uSitGlint.xyz;
@@ -909,7 +914,17 @@ const beadFragment = /* glsl */ `
     col = mix(thru, refl, F);
     col += uSun * (smoothstep(0.9965, 0.9985, hw) * 2.6 + pow(hw, 260.0) * 0.5) * uExpo;
     // At a ting the rim brightens: the sky bends round the edge.
-    col += skyColor(vec3(0.0, 1.0, 0.0)) * pow(1.0 - cosi, 3.0) * (0.06 + 0.4 * vBead.z);
+    col += skyColor(vec3(0.0, 1.0, 0.0)) * pow(1.0 - cosi, 3.0) * (0.06 + 0.4 * min(vBead.z, 1.0));
+    // A falling drop (rim boost above 1) catches the glow in one hard point: at a distance it is
+    // that bright point, dropping out of the dark. Its body is lit pearl, not the dark it falls
+    // through: it holds the brightest of the sky behind the eye.
+    if (vBead.z > 1.2) {
+      col = mix(col, col * 0.55 + skyColor(normalize(vec3(-rd.x, 0.6, -rd.z))) * 0.75 * uExpo, 0.55 * (vBead.z - 1.0));
+      // Backlit: the edge glows instead of mirroring the dark above it.
+      col += skyColor(vec3(0.0, 1.0, 0.0)) * pow(1.0 - cosi, 2.0) * 0.9 * (vBead.z - 1.0) * uExpo;
+      float sp = max(dot(N1, normalize(-rd + glowL())), 0.0);
+      col += vec3(1.0, 0.92, 0.82) * (pow(sp, 160.0) * 10.0 + pow(sp, 50.0) * 4.0 + pow(sp, 12.0) * 0.6) * (vBead.z - 1.0) * uExpo;
+    }
     float dist = length(P - cameraPosition);
     col = mix(col, uHaze, 1.0 - exp(-dist * uHazeK));
     vec4 clip = projectionMatrix * viewMatrix * vec4(P, 1.0);
@@ -1350,8 +1365,13 @@ const dofGatherFragment = /* glsl */ `
     vec4 c0 = texture2D(tPrep, vUv);
     float cc = abs(c0.a);
     float R = min(max(cc, texture2D(tNearMax, vUv).r), uMaxR);
-    vec3 acc = c0.rgb;
-    float tot = 1.0;
+    // Two layers: what lies at or behind this pixel's depth (averaged where its circle reaches),
+    // and what lies in front of it, laid over by its coverage: each sample stands for R^2/48 of the
+    // disc, and a nearer thing spreads its light over its own circle, sc^2. So a blurred blade in
+    // front veils a sharp bead by just as much as it covers it, and a blurred margin's edge melts
+    // into the blurred yard behind it instead of stopping hard.
+    vec3 bg = c0.rgb, fg = vec3(0.0);
+    float bw = 1.0, fw = 0.0, cov = 0.0;
     if (R > 0.6) {
       for (int i = 0; i < 48; i++) {
         float fi = float(i) + 0.5;
@@ -1359,13 +1379,35 @@ const dofGatherFragment = /* glsl */ `
         float a = fi * 2.39996323;
         vec4 s = at(vUv + vec2(cos(a), sin(a)) * r * uTexel, R);
         float sc = abs(s.a);
+        bool front = s.a > c0.a + 0.5;
         if (s.a < c0.a) sc = min(sc, cc * 2.0);
         float m = smoothstep(r - 0.75, r + 0.75, sc);
-        acc += mix(acc / tot, s.rgb, m);
-        tot += 1.0;
+        if (front) {
+          fg += s.rgb * m;
+          fw += m;
+          cov += m * R * R / (48.0 * max(sc * sc, 1.0));
+        } else {
+          bg += s.rgb * m;
+          bw += m;
+        }
       }
     }
-    gl_FragColor = vec4(acc / tot, R);
+    vec3 back = bg / bw;
+    vec3 col = fw > 0.0 ? mix(back, fg / fw, clamp(cov, 0.0, 1.0)) : back;
+    gl_FragColor = vec4(col, R);
+  }
+`;
+
+// The smaller copies for wide circles leave out what is in focus: a sharp bead never spreads, so
+// averaging it into a wide texel would only invent a halo round it (and a false depth between).
+const dofDownFragment = /* glsl */ `
+  uniform sampler2D tSrc; uniform vec2 uTexel; varying vec2 vUv;
+  void main() {
+    vec4 s0 = texture2D(tSrc, vUv + uTexel * vec2(-0.5, -0.5)), s1 = texture2D(tSrc, vUv + uTexel * vec2(0.5, -0.5));
+    vec4 s2 = texture2D(tSrc, vUv + uTexel * vec2(-0.5, 0.5)), s3 = texture2D(tSrc, vUv + uTexel * vec2(0.5, 0.5));
+    vec4 w = vec4(smoothstep(0.5, 1.5, abs(s0.a)), smoothstep(0.5, 1.5, abs(s1.a)), smoothstep(0.5, 1.5, abs(s2.a)), smoothstep(0.5, 1.5, abs(s3.a))) + 1e-4;
+    float W = w.x + w.y + w.z + w.w;
+    gl_FragColor = (s0 * w.x + s1 * w.y + s2 * w.z + s3 * w.w) / W;
   }
 `;
 
@@ -1386,7 +1428,7 @@ class DepthOfField {
     });
     this.max = q(dofMaxFragment, { tSrc: { value: null }, uStep: { value: new THREE.Vector2() }, uTexel: { value: new THREE.Vector2() }, uK: { value: 1 }, uFirst: { value: 1 } });
     this.gather = q(dofGatherFragment, { tPrep: { value: null }, tPrep4: { value: null }, tPrep8: { value: null }, tNearMax: { value: null }, uTexel: { value: new THREE.Vector2() }, uMaxR: { value: 16 } });
-    this.down = q(downFragment, { tSrc: { value: null }, uTexel: { value: new THREE.Vector2() } });
+    this.down = q(dofDownFragment, { tSrc: { value: null }, uTexel: { value: new THREE.Vector2() } });
     this.quad = new FullScreenQuad(this.prep);
     this.targets = {};
   }
@@ -1737,9 +1779,9 @@ export class Garden {
       uSitB: { value: Array.from({ length: 8 }, () => new THREE.Vector4()) },
       uSitHead: { value: new THREE.Vector4(0, 0, -900, 0) },
       uSitGlint: { value: new THREE.Vector4(0, 0, -900, 0) },
-      uWall: { value: c(0x857c98) },
-      uWallLit: { value: c(0xb49ea8) },
-      uWin: { value: c(0xffd9a8, 2.4) },
+      uWall: { value: c(0x6f6888) },
+      uWallLit: { value: c(0x9c8898) },
+      uWin: { value: c(0xffd9a8, 1.7) },
       uStone: { value: c(0xb2aab4) },
       uGravel: { value: c(0x6a6070) },
       uTerrace: { value: c(0x8e9a98) },

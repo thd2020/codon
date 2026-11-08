@@ -344,9 +344,13 @@ export class Intro {
 
   // Morning: The First Morning's director (morning.js, passed in by playFirstMorning()). With it the
   // intro plays the notebook's first page (shots 0 -> 1 -> 2 -> 3) and then continues from the hub,
-  // lens in hand, exactly as the first launch does from 0:08.
-  constructor({ renderer, composer, look, scene, camera, controls, cellPass, water, hero, neighbours, player, hud, params, MicroIntro = null, iconUrl, Morning = null } = {}) {
-    Object.assign(this, { renderer, composer, look, scene, camera, controls, cellPass, water, hero, neighbours, player, hud });
+  // lens in hand, exactly as the first launch does from 0:08. onHub(intro): called when the hub
+  // takes over (the morning ended or was skipped). autoDive: false keeps the hub until the player
+  // dives (by default the glass dives by itself, as on first launch). preroll: false starts at once
+  // (call it from a click or key handler, so the sound can start in that gesture), with no web
+  // pre-roll.
+  constructor({ renderer, composer, look, scene, camera, controls, cellPass, water, hero, neighbours, player, hud, params, MicroIntro = null, iconUrl, Morning = null, onHub = null, autoDive = true, preroll = true } = {}) {
+    Object.assign(this, { renderer, composer, look, scene, camera, controls, cellPass, water, hero, neighbours, player, hud, onHub, autoDive });
     params = params ?? new URLSearchParams(location.search);
     this.params = params;
     this.headless = params.has('frames');
@@ -438,7 +442,10 @@ export class Intro {
     }
     this.bindInput();
     if (this.headless) this.start();
-    else this.ui.showPre(true);
+    else if (!preroll) {
+      this.audio.resume();
+      this.start();
+    } else this.ui.showPre(true);
   }
 
   get inGarden() {
@@ -629,6 +636,7 @@ export class Intro {
     g.schlieren = 0.5;
     this.timeScale = 1;
     for (const c of this.cues) if (c.clock === 'morning') c.done = true;
+    this.onHub?.(this);
   }
 
   // Gamepad: left stick steers the glass, the triggers raise and lower it, A dives, B (held) skips.
@@ -951,7 +959,7 @@ export class Intro {
     this.ui.setPicto(showPicto, css.x + rCss + 18, css.y);
     // The dive by itself: 0:17 with no input; otherwise after 9 s of rest, and at 0:38 at the latest.
     const due = idle ? T.autoDive : Math.min(T.hubLimit, Math.max(T.autoDive, this.lastInput + 9));
-    if (t >= due) this.requestDive('auto');
+    if (t >= due && this.autoDive !== false) this.requestDive('auto');
   }
 
   cssOf(px, out = new THREE.Vector2()) {
@@ -1205,7 +1213,13 @@ export class Intro {
   stepSkip(real) {
     if (this.state === 'blink' || this.state === 'done') return;
     const pad = this.pad;
-    const held = this.keys.has('Escape') || (pad && pad.back);
+    let held = this.keys.has('Escape') || (pad && pad.back);
+    // After skipping The First Morning, the same held key does not go on to skip the opening: it has
+    // to be let go first.
+    if (this.skipLatch) {
+      if (!held) this.skipLatch = false;
+      held = false;
+    }
     this.skipHold = held ? this.skipHold + real : Math.max(0, this.skipHold - real * 3);
     let x = innerWidth / 2, y = innerHeight / 2, r = 46;
     if (this.state === 'garden' && this.garden.loupeOn) {
@@ -1283,6 +1297,7 @@ export class Intro {
       this.landed = true;
       this.toHub();
       this.state = 'blink';
+      this.skipLatch = true;
       u.uGrad.value = 1;
       u.uPoint.value = 0;
       u.uReveal.value = 1;

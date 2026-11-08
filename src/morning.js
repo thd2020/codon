@@ -8,23 +8,24 @@ import { Intro } from './intro.js';
 // Local frame (mm): origin on the step under the hips, +x the way the child faces, +y up, +z the
 // child's left. A nine-year-old: thigh about 350, shin 330, hips to shoulders 380, head radius 95.
 const POSE = {
-  // P0: sitting with the knees drawn up, arms round the shins, the head down on the knees.
+  // P0: sitting with the knees drawn up, arms round the shins, the head down on the knees. Drawn to
+  // read small and upside down: the rounded back, a big head bowed onto the knees, the shins.
   hug: {
-    pelvis: [0, 95, 0], shoulder: [160, 356, 0], head: [292, 462, 0],
-    knee: [292, 334, 0], ankle: [352, 46, 0], toe: [446, 28, 0],
-    elbow: [300, 214, -26], hand: [386, 252, -26], elbow2: [292, 226, 26], hand2: [380, 262, 26],
+    pelvis: [0, 105, 0], back: [42, 262, 0], shoulder: [150, 378, 0], head: [290, 452, 0],
+    knee: [305, 335, 0], ankle: [345, 46, 0], toe: [445, 30, 0],
+    elbow: [238, 228, -30], hand: [342, 206, -30],
   },
   // P2: leaning forward, the head lifted off the knees, one hand raised to the face.
   wipe: {
-    pelvis: [0, 95, 0], shoulder: [196, 372, 0], head: [334, 470, 0],
-    knee: [292, 334, 0], ankle: [352, 46, 0], toe: [446, 28, 0],
-    elbow: [300, 318, -30], hand: [362, 448, -30], elbow2: [296, 226, 26], hand2: [382, 262, 26],
+    pelvis: [0, 105, 0], back: [52, 268, 0], shoulder: [170, 392, 0], head: [322, 500, 0],
+    knee: [305, 335, 0], ankle: [345, 46, 0], toe: [445, 30, 0],
+    elbow: [300, 330, -40], hand: [372, 462, -40],
   },
   // P3: turned to the leaf and leaning right over it (by then out of the drops' sight).
   lean: {
-    pelvis: [0, 95, 0], shoulder: [300, 300, 0], head: [450, 300, 0],
-    knee: [292, 300, 0], ankle: [352, 46, 0], toe: [446, 28, 0],
-    elbow: [420, 200, -60], hand: [520, 160, -60], elbow2: [400, 210, 60], hand2: [500, 170, 60],
+    pelvis: [0, 105, 0], back: [140, 240, 0], shoulder: [300, 300, 0], head: [450, 300, 0],
+    knee: [300, 300, 0], ankle: [352, 46, 0], toe: [446, 28, 0],
+    elbow: [420, 200, -60], hand: [520, 160, -60],
   },
 };
 const JOINTS = Object.keys(POSE.hug);
@@ -36,7 +37,7 @@ export class ChildFigure {
     for (const k of JOINTS) this.j[k] = new THREE.Vector3();
     // Where the child sits, relative to the tear bead: on the step, beyond the plant and to its right
     // as the low camera looks at the house, side-on to it.
-    this.root = new THREE.Vector3(170, -60, -1050);
+    this.root = new THREE.Vector3(320, -175, -1200);
     this.facing = Math.PI; // the way the child faces in the xz-plane (pi: toward -x)
     this.glint = 0;
     this._m = new THREE.Matrix4();
@@ -54,7 +55,8 @@ export class ChildFigure {
     }
     if (sob) {
       // The shoulders catch up and back, the head with them; the hands stay on the shins.
-      for (const k of ['shoulder', 'head', 'elbow', 'elbow2']) this.j[k].add(_t.set(-14 * sob, 26 * sob, 0));
+      for (const k of ['shoulder', 'head', 'elbow']) this.j[k].add(_t.set(-14 * sob, 26 * sob, 0));
+      this.j.back.add(_t.set(-6 * sob, 12 * sob, 0));
     }
     return this;
   }
@@ -72,17 +74,18 @@ export class ChildFigure {
       const pb = J(b);
       Bv.set(pb.x, pb.y, pb.z, rb);
     };
-    // Torso (hips to shoulders), thigh, shin, foot, both arms.
-    cap(0, 'pelvis', 94, 'shoulder', 86);
-    cap(1, 'pelvis', 66, 'knee', 52);
-    cap(2, 'knee', 48, 'ankle', 34);
-    cap(3, 'ankle', 32, 'toe', 26);
-    cap(4, 'shoulder', 36, 'elbow', 30);
-    cap(5, 'elbow', 29, 'hand', 27);
-    cap(6, 'shoulder', 34, 'elbow2', 29);
-    cap(7, 'elbow2', 28, 'hand2', 26);
+    // The back in two (so it rounds), the hood joining head to shoulders, a thigh, a shin, a foot
+    // and the near arm (the far one is hidden behind the body in profile).
+    cap(0, 'pelvis', 102, 'back', 100);
+    cap(1, 'back', 100, 'shoulder', 90);
+    cap(2, 'shoulder', 74, 'head', 62);
+    cap(3, 'pelvis', 74, 'knee', 62);
+    cap(4, 'knee', 60, 'ankle', 46);
+    cap(5, 'ankle', 42, 'toe', 33);
+    cap(6, 'shoulder', 46, 'elbow', 40);
+    cap(7, 'elbow', 39, 'hand', 33);
     const h = J('head');
-    u.uSitHead.value.set(h.x, h.y, h.z, 96);
+    u.uSitHead.value.set(h.x, h.y, h.z, 112);
     // The brass loupe in the lap, on the near side, between the chest and the thighs.
     const g = _w.set(0, 0, 0).add(this.j.pelvis).lerp(this.j.knee, 0.55).add(_t.set(10, 30, -60)).applyMatrix4(m);
     u.uSitGlint.value.set(g.x, g.y, g.z, this.glint);
@@ -181,11 +184,11 @@ const RING = { a2: 0.12, w2: 240, tau2: 0.9, a3: 0.05, w3: 466, tau3: 0.33 };
 // The low push looks along a valley of the blade (a primary vein runs down it to the bead).
 const AZ = -17;
 const CAM = {
-  start: { d: 55, el: 9, az: AZ - 2 },
+  start: { d: 42, el: 9, az: AZ - 2 },
   tenth: 26, // at 0:10
   near: { d: 13.5, el: 4, az: AZ + 2 },
-  back: { d: 30, el: 7 },
-  rise: { d: 30, el: 18 },
+  back: { d: 19, el: 6 },
+  rise: { d: 24, el: 18 },
   top: { d: 117, el: 90 },
 };
 
@@ -282,6 +285,20 @@ export class Morning {
     g.u.uSit.value = 1;
     g.loupeOn = false;
     g.schlieren = 0;
+    // Beads the low push would pass through or over (they would fill the frame as blurred blobs)
+    // stay off for the morning.
+    const a = THREE.MathUtils.degToRad(AZ);
+    const dir = _a.set(Math.sin(a), 0, Math.cos(a));
+    this.hidden = [];
+    g.beads.forEach((b, i) => {
+      if (i === 0) return;
+      const along = b.c.x * dir.x + b.c.z * dir.z;
+      const across = Math.abs(b.c.x * dir.z - b.c.z * dir.x);
+      if (along > 6 && along < 48 && across < 5 + b.r) {
+        g.setBeadInstance(i, null);
+        this.hidden.push(i);
+      }
+    });
     g.glass.on = 0;
     g.portalM = null;
     g.focusBlur = null;
@@ -316,13 +333,17 @@ export class Morning {
     const up = smooth(M.rise, M.loupeIn, t); // the rise toward the hub's own settings
     // Dawn brightens as the image opens; the low views a little darker than the hub (they look
     // into the sky), easing to the hub's exposure as the camera rises over the leaf.
-    g.expo = (0.74 + 0.12 * smooth(M.reveal, 8, t)) * (1 - up) + 1.22 * up;
-    g.farGain = 0.85 + (0.37 - 0.85) * up;
+    g.expo = (0.66 + 0.1 * smooth(M.reveal, 8, t)) * (1 - up) + 1.22 * up;
+    g.farGain = 0.8 + (0.37 - 0.8) * up;
+    // A firmer curve for the low views (dawn light across the leaf has depth); the hub's own as
+    // the camera rises.
+    const lu = this.intro.look?.lens?.uniforms;
+    if (lu) lu.uContrast.value = 0.36 + (0.24 - 0.36) * up;
     g.u.uGraze.value = 0.1 + 0.9 * up;
     g.u.uYard.value = 1 - smooth(M.rise + 2.5, M.loupeIn + 1.5, t);
     // The child leans in: the sky dims (15% at most) and the top of the frame darkens.
     g.skyOcc = 0.55 * smooth(M.lean + 0.5, M.enter, t) * (1 - smooth(M.settle, M.rise + 1, t)) + smooth(M.rise + 1, M.loupeSettle, t);
-    g.shadeTop = 0.62 * smooth(M.lean + 0.6, M.enter, t) * (1 - smooth(M.settle + 0.5, M.rise + 1.5, t));
+    g.shadeTop = 0.85 * smooth(M.lean + 0.6, M.enter, t) * (1 - smooth(M.settle + 0.5, M.rise + 1.5, t));
     // Depth of field: a macro lens's, focused on the bead; it closes as the camera rises (from
     // overhead the leaf lies all at one depth, as in the hub).
     const camD = this.cam.d;
@@ -357,7 +378,7 @@ export class Morning {
     // Brass in the lap catches the sky as the shoulders shake.
     f.glint = Math.max(0, Math.sin(Math.PI * clamp((t - M.sob - 0.2) / 0.7, 0, 1))) * 0.9;
     // Leaning over the leaf: the child turns toward it and comes over it, out of the bead's sight.
-    f.root.set(170 - 120 * lean, -60 + 60 * lean, -1050 + 650 * lean);
+    f.root.set(320 - 280 * lean, -175 + 175 * lean, -1200 + 800 * lean);
     f.facing = Math.PI - (Math.PI / 2) * lean;
     f.apply();
     u.uSit.value = 1 - smooth(M.lean + 1.4, M.lean + 2.9, t);
@@ -379,6 +400,8 @@ export class Morning {
       if (since > 0) {
         const h = V_IMPACT * -tau - 0.5 * G * tau * tau;
         g.setFall(_v.set(0.18, top + TEAR_R + h, 0.12), TEAR_R);
+        // Backlit: its rim glows, so it reads as a bright point against the dark above.
+        if (!this.fallRim) g.setRim(g.fallIndex, 1.8), g.setRim(g.fallIndex + 1, 1.8), (this.fallRim = true);
       } else g.setFall(null);
       g.setMerge(null);
       g.setSatellite(null);
@@ -471,7 +494,7 @@ export class Morning {
     c.up.set(0, 1 - tu, tu).normalize();
     cam.up.copy(c.up);
     // The tilt up: the target rises 10 mm above the bead (and 3 back).
-    c.look.copy(C).add(_a.set(0, 10 * c.lookUp, -3 * c.lookUp));
+    c.look.copy(C).add(_a.set(0, 4.0 * c.lookUp, -1.2 * c.lookUp));
     cam.lookAt(c.look);
     cam.updateMatrixWorld();
     g.focus = Math.max(c.d - this.beadR, 0.5);
@@ -487,10 +510,17 @@ export class Morning {
       { d: CAM.back.d, el: CAM.back.el, az: CAM.near.az, lookUp: 1 },
       { d: CAM.rise.d, el: CAM.rise.el, az: CAM.near.az, lookUp: 0 },
       { d: CAM.top.d, el: CAM.top.el, az: CAM.near.az + 180, lookUp: 0 },
-    ][stage];
-    if (this.rmStage !== undefined && stage !== this.rmStage) this.intro.veil.capture();
-    this.rmStage = stage;
-    Object.assign(c, P);
+    ];
+    // A new framing: keep this frame (as it is drawn now) to crossfade from, and cut on the next.
+    if (this.rmStage === undefined) this.rmStage = stage;
+    else if (stage !== this.rmStage && this.rmPending == null) {
+      this.intro.veil.capture();
+      this.rmPending = stage;
+    } else if (this.rmPending != null) {
+      this.rmStage = this.rmPending;
+      this.rmPending = null;
+    }
+    Object.assign(c, P[this.rmStage]);
   }
 
   // Shot 3: the loupe slides in from the bottom edge, held by the fingertips, and settles over the
@@ -542,13 +572,19 @@ export class Morning {
     const N = V.add(W).normalize();
     const p = g.toScreen(_c.copy(this.bead).addScaledVector(N, this.beadR));
     v.uPointPos.value.set(p.x / g.size.x, p.y / g.size.y);
-    v.uFarTone.value.set(0.62, 0.6, 0.66);
+    // The low view's own mean tone (measured), which the dawn gradient settles to as the image opens.
+    v.uFarTone.value.set(0.6, 0.63, 0.6);
   }
 
   // Leaves the Garden as the hub expects it: the merged bead, no yard, the hub's grade.
   end() {
     const g = this.garden;
-    if (!g) return;
+    if (!g || this.done && this.ended) return;
+    this.ended = true;
+    for (const i of this.hidden ?? []) g.setBeadInstance(i, g.beads[i].c, g.beads[i].r);
+    this.hidden = [];
+    const lu = this.intro.look?.lens?.uniforms;
+    if (lu) lu.uContrast.value = 0.24;
     g.setMorning(false);
     g.setTearBead(_c.set(0, PRE.c.y + (Math.cbrt(PRE.r ** 3 + TEAR_R ** 3) - PRE.r), 0), Math.cbrt(PRE.r ** 3 + TEAR_R ** 3));
     g.setFall(null);
@@ -584,7 +620,9 @@ const _q4c = new THREE.Vector4();
 
 // The notebook's first page: plays The First Morning in the game's own composer, then leaves the
 // player in the hub with the lens in hand (and from there, as on first launch, the dive). Takes what
-// the Intro takes (story §6.1); returns the Intro, which the game loop drives while `intro.active`.
+// the Intro takes (story §6.1), plus onHub and autoDive; returns the Intro, which the game loop
+// drives while `intro.active`. Call it from the page's click (or key) handler: it starts at once,
+// with no pre-roll, and the sound starts inside that gesture.
 export function playFirstMorning(deps) {
-  return new Intro({ ...deps, Morning });
+  return new Intro({ preroll: false, ...deps, Morning });
 }
