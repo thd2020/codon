@@ -1,32 +1,114 @@
+/* Codon's interface: ink and plum on a pale, sunlit drop. Text stays crisp: a tight paper halo hugs
+   the letters (a pixel or two), never a cloud; accents are solid brand mint and plum. No outlines,
+   borders, leader lines, ticks or rules anywhere. */
+:root {
+  --ink: #2b2340;
+  --ink-soft: #4f4366;
+  --plum: #5e3a8c;
+  --mint: #2a9d84;
+  --mint-deep: #1d7a66;
+  --paper: 248 246 240;
+  --low: #a35c12;
+  --ferment: #b03a5b;
+  --halo: 0 0 1px rgb(var(--paper)), 0 0 3px rgb(var(--paper)), 0 0 6px rgb(var(--paper) / 0.7);
+  --font: "Avenir Next", "Futura", "Century Gothic", "Helvetica Neue", Inter, "DejaVu Sans", sans-serif;
+}
+
 html, body {
   margin: 0;
   height: 100%;
   overflow: hidden;
-  background: #020b16;
-  color: #f2efe9;
-  font-family: "Avenir Next", "Futura", "Century Gothic", "Helvetica Neue", "DejaVu Sans", sans-serif;
+  background: #dbefec;
+  color: var(--ink);
+  font-family: var(--font);
   -webkit-font-smoothing: antialiased;
+  font-kerning: normal;
 }
 #app, canvas { display: block; }
 .labels { position: fixed; inset: 0; pointer-events: none; }
 
-/* Tags pinned to the cell: a dot on the part, a hairline lead, then the name. */
-.tag { width: 0; height: 0; transition: opacity 0.2s; }
-.tag .dot {
-  position: absolute; left: -3px; top: -3px; width: 6px; height: 6px; border-radius: 50%;
-  background: #86dcc6; box-shadow: 0 0 8px #86dcc6aa;
+/* Readouts and panels in the water: the halo, and a faint wash of paper just behind the text. */
+.paper { position: relative; isolation: isolate; text-shadow: var(--halo); }
+.paper::before {
+  content: ""; position: absolute; inset: -4px -10px; z-index: -1;
+  background: radial-gradient(closest-side, rgb(var(--paper) / 0.5), rgb(var(--paper) / 0.32) 62%, rgb(var(--paper) / 0));
 }
-.tag .lead { position: absolute; left: 0; top: 0; height: 1px; background: #86dcc6b0; transform-origin: 0 0; }
-.tag .txt { position: absolute; transform: translateY(-50%); white-space: nowrap; display: flex; flex-direction: column; gap: 2px; text-shadow: 0 1px 6px #020b16; }
-.tag b { font-weight: 600; font-size: 13px; letter-spacing: 0.04em; }
-.tag i { font-style: normal; font-size: 11px; color: #f2efe9a8; letter-spacing: 0.02em; }
-.tag-l .txt { align-items: flex-end; }
-.tag-env .dot { background: transparent; border: 1px solid #f2efe9aa; box-shadow: none; }
-.tag-env .lead { display: none; }
+.floater { white-space: nowrap; }
 
-/* Readouts on the vitals ring. */
-.readout { font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: #f2efe9cc; white-space: nowrap; text-shadow: 0 1px 6px #020b16; }
-.readout b { font-weight: 600; color: #86dcc6; margin-right: 4px; }
-.readout.right b { color: #f2efe9; }
-.readout.scale { text-transform: none; letter-spacing: 0.06em; }
-.readout.scale span { opacity: 0.5; margin: 0 4px; }
+/* Vitals beside the arcs: "ATP 72%", "Δp −165 mV". */
+.vital { display: flex; align-items: baseline; gap: 7px; white-space: nowrap; }
+.vital .k { font-size: 12px; font-weight: 700; letter-spacing: 0.08em; }
+.vital .v { font-size: 18px; font-weight: 600; color: var(--ink); font-variant-numeric: tabular-nums; letter-spacing: 0.01em; }
+.vital.atp .k { color: var(--mint-deep); }
+.vital.pmf .k { color: var(--plum); }
+
+/* Under the scale bar: 1 µm · speed. */
+.barlabel { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--ink-soft); font-variant-numeric: tabular-nums; }
+.barlabel b { font-weight: 700; color: var(--plum); font-size: 12.5px; }
+.barlabel i { width: 3px; height: 3px; border-radius: 50%; background: var(--ink-soft); opacity: 0.6; }
+
+/* A key on a solid mint pebble, white letters: the engulf prompt and the notes' advice. */
+.note kbd, .prompt .key {
+  display: grid; place-items: center; min-width: 22px; height: 20px; padding: 0 6px; box-sizing: border-box;
+  border-radius: 10px; background: var(--mint); color: #fff; font: 700 11.5px/1 var(--font); text-shadow: none;
+}
+
+/* The mode note above the cell: what is wrong, why, and what to do. */
+.note { display: flex; flex-direction: column; align-items: center; gap: 2px; text-align: center; }
+.note b { font-size: 13.5px; font-weight: 700; letter-spacing: 0.01em; }
+.note b::before {
+  content: ""; display: inline-block; width: 7px; height: 7px; margin: 0 7px 1px 0; border-radius: 50%;
+  background: currentColor; animation: breathe 2.4s ease-in-out infinite;
+}
+.note b.low { color: var(--low); }
+.note b.ferment { color: var(--ferment); }
+.note b.weak { color: var(--plum); }
+.note span { font-size: 11.5px; color: var(--ink-soft); }
+.note em { display: flex; align-items: center; gap: 6px; margin-top: 3px; font-style: normal; font-size: 12px; font-weight: 700; color: var(--ink); }
+@keyframes breathe { 50% { opacity: 0.45; } }
+
+/* Inspect: the bead legend and the ledger. */
+.panel { display: flex; flex-direction: column; gap: 3px; font-size: 12px; }
+.panel::before { inset: -6px -12px; }
+.panel .cap { font-size: 10.5px; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; color: var(--plum); margin-bottom: 3px; }
+.legend { align-items: flex-end; }
+.legend .row { display: flex; align-items: center; gap: 8px; max-height: 18px; overflow: hidden; transition: opacity 0.4s, max-height 0.4s; }
+.legend .row.off { opacity: 0; max-height: 0; }
+.legend .bead {
+  order: 2; width: 9px; height: 9px; border-radius: 50%; flex: none;
+  background: radial-gradient(circle at 38% 35%, #fff 0 12%, var(--c) 48%); box-shadow: 0 0 3px var(--c);
+}
+.ledger .row { display: grid; grid-template-columns: 66px 34px auto; align-items: baseline; gap: 6px; }
+.ledger .k { color: var(--ink-soft); }
+.ledger .v { font-weight: 700; color: var(--ink); text-align: right; font-variant-numeric: tabular-nums; }
+.ledger .u { font-size: 11px; color: var(--ink-soft); }
+.ledger .foot { margin-top: 3px; font-size: 10.5px; color: var(--ink); }
+
+/* Inspect tags: a pin on the part (a paper-white disc with an ink core, unlike any bead) and its
+   name right beside it. No line joins them, so the name never strays from its pin. */
+.tag { width: 0; height: 0; }
+.tag .dot {
+  position: absolute; left: -3.5px; top: -3.5px; width: 7px; height: 7px; border-radius: 50%;
+  background: radial-gradient(circle, var(--ink) 0 1.4px, #fff 1.9px);
+  box-shadow: 0 0 3px 1px rgb(var(--paper) / 0.85);
+  transition: transform 0.3s;
+}
+.tag.focus .dot { transform: scale(1.45); background: radial-gradient(circle, var(--plum) 0 1.4px, #fff 1.9px); }
+.tag .txt {
+  position: absolute; left: 0; top: 0; display: flex; flex-direction: column; gap: 1px;
+  width: max-content; max-width: 230px; white-space: normal; text-shadow: var(--halo);
+}
+.tag .txt[data-align="r"] { text-align: right; align-items: flex-end; }
+.tag .txt[data-align="c"] { text-align: center; align-items: center; }
+.tag b { font-size: 12.5px; font-weight: 700; color: var(--ink); letter-spacing: 0.01em; line-height: 16px; }
+.tag.focus b { color: var(--plum); }
+.tag i { display: none; font-style: normal; font-size: 11.5px; font-weight: 500; line-height: 15.5px; color: var(--ink-soft); text-wrap: balance; }
+.tag.in i { color: #3a3050; }
+.tag.focus i { display: block; animation: reveal 0.5s ease-out; }
+@keyframes reveal { from { opacity: 0; } }
+
+/* The engulf prompt beside the particle: the key on its pebble, then what it does. */
+.prompt { display: flex; align-items: center; gap: 8px; }
+.prompt .key { min-width: 24px; height: 24px; border-radius: 12px; font-size: 13px; animation: beckon 1.6s ease-in-out infinite; }
+.prompt .act { font-size: 13.5px; font-weight: 700; color: var(--ink); }
+@keyframes beckon { 50% { transform: scale(1.08); } }
