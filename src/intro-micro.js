@@ -351,7 +351,8 @@ class MicroAudio {
       const b = rods[i];
       const v = this.voiceFor(b);
       v.seen = f;
-      this.set(v, b.gone ? 0 : v.level * (1 - b.ghost) * presence, 0.15);
+      // (a daughter born this frame has no ghost yet)
+      this.set(v, b.gone ? 0 : v.level * (1 - (b.ghost ?? 0)) * presence, 0.15);
     }
     for (const v of this.voices.values()) if (v.seen !== f) this.set(v, 0, 0.3);
     if (this.hero) this.set(this.hero, this.hero.level * heroWall * presence, 0.1);
@@ -842,10 +843,14 @@ export class MicroIntro {
     const drop = lerpDrop(DAWN, LOOK.drop, s, this._drop);
     // At the top of the descent, looking down, the depth shows the leaf far below through the bead's
     // lower skin: a darker celadon under a brighter, hazier surface, so the eye reads the depth.
+    // Just under the skin the depth still holds the skin's own light: the Garden's last frame is a
+    // pale mint glow, so the descent comes out of the flash at that tone and deepens into the celadon
+    // as it sinks (no dark frame waiting behind the flash).
     const leaf = (1 - s) * (1 - smooth(4, 7.5, t));
     if (leaf > 0) {
-      drop.deep = lerpHex(drop.deep, 0x8cb2a6, 0.75 * leaf);
-      drop.abyss = lerpHex(drop.abyss, 0x6f948a, 0.8 * leaf);
+      const skin = 1 - smooth(0.3, 2.6, t);
+      drop.deep = lerpHex(drop.deep, lerpHex(0x8cb2a6, 0xd2ece0, skin), (0.75 + 0.2 * skin) * leaf);
+      drop.abyss = lerpHex(drop.abyss, lerpHex(0x6f948a, 0xc6e4d6, skin), (0.8 + 0.15 * skin) * leaf);
       drop.haze = lerpHex(drop.haze, 0xeeeff6, 0.5 * leaf);
       drop.meniscus = lerpHex(drop.meniscus, 0xeaf0f4, 0.5 * leaf);
     }

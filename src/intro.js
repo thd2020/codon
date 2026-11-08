@@ -59,6 +59,7 @@ const T = {
 };
 // The dive, in seconds from diveAt.
 const CAP_MIN = 1.5; // the shortest time a caption stays up (s)
+const BAR_Y = 0.86; // the stepping scale bar's line, as a share of the window's height from the top
 const DIVE = { sink: 3.0, push: 8.0, skin: 9.65, cross: 10.0, flashUp: 0.35, flashDown: 0.35 };
 const SKIN = { start: 9.35, end: 0.42, last: 0.27 }; // distance from the skin (mm): start of the push, its end, the last approach
 const H_END = 11.5; // eye above the bead when the glass fills the frame
@@ -242,7 +243,9 @@ class IntroUI {
     el('img', { width: '64px', height: '64px', borderRadius: '15px', opacity: '0.92' }, this.pre).src = iconUrl;
     el('div', { color: 'rgba(236,232,244,0.78)', fontSize: '14px', letterSpacing: '0.06em' }, this.pre, 'click or press any key');
     // The stepping scale bar.
-    this.bar = el('div', { position: 'absolute', left: '50%', bottom: '9.5vh', transform: 'translateX(-50%)', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '7px', opacity: '0', transition: 'opacity 0.6s ease' }, this.root);
+    // Placed by the middle of its line (setBar), so in the glide it can settle exactly onto the
+    // HUD's own 1 µm bar and hand over to it in place.
+    this.bar = el('div', { position: 'absolute', left: '50%', top: '86vh', transform: 'translate(-50%, -2.5px)', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '7px', opacity: '0', transition: 'opacity 0.6s ease' }, this.root);
     this.barLine = el('div', {
       height: '5px', borderRadius: '3px', background: 'linear-gradient(90deg, rgba(94,58,140,0) 0%, #5e3a8c 9%, #5e3a8c 91%, rgba(94,58,140,0) 100%)',
       boxShadow: '0 0 6px rgba(248,246,240,0.95), 0 0 14px rgba(248,246,240,0.6)', width: '100px', transition: 'opacity 0.25s ease',
@@ -326,7 +329,8 @@ class IntroUI {
     }
   }
 
-  setBar(visible, label, px) {
+  // x, y: where the middle of the line sits (CSS px); by default centred, low in the frame.
+  setBar(visible, label, px, x = innerWidth / 2, y = BAR_Y * innerHeight) {
     this.put(this.bar, 'opacity', visible ? '1' : '0');
     if (!visible) return;
     if (label !== this.label) {
@@ -334,6 +338,8 @@ class IntroUI {
       this.barLabel.textContent = label;
     }
     this.put(this.barLine, 'width', `${Math.round(clamp(px, 4, innerWidth * 0.6))}px`);
+    this.put(this.bar, 'left', `${x.toFixed(1)}px`);
+    this.put(this.bar, 'top', `${y.toFixed(1)}px`);
   }
 
   setPicto(on, x, y) {
@@ -388,7 +394,7 @@ export class Intro {
   // the sound can start in that gesture), with no web pre-roll. audio: an earlier opening's
   // IntroAudio still playing (main.js's first-launch `intro.audio`): it fades out and closes as this
   // one starts, so its tide never plays under the dawn.
-  constructor({ renderer, composer, look, scene, camera, controls, cellPass, water, hero, neighbours, player, hud, params, MicroIntro = null, iconUrl, Morning = null, onHub = null, onDive = null, autoDive = true, replay = false, preroll = true, audio = null } = {}) {
+  constructor({ renderer, composer, look, scene, camera, controls, cellPass, water, hero, neighbours, player, hud, feeding = null, params, MicroIntro = null, iconUrl, Morning = null, onHub = null, onDive = null, autoDive = true, replay = false, preroll = true, audio = null } = {}) {
     Object.assign(this, { renderer, composer, look, scene, camera, controls, cellPass, water, hero, neighbours, player, hud, onHub, onDive, autoDive, replay });
     params = params ?? new URLSearchParams(location.search);
     this.params = params;
@@ -470,6 +476,19 @@ export class Intro {
     const m = this.micro;
     this.microOwnsSound = m.ownsSound ?? typeof m.attachAudio === 'function';
     this.microOwnsHud = m.ownsHud ?? !(m instanceof CutToGame);
+    // A MicroIntro with its own caption hook captions its own sounds (whoever plays them, and with
+    // the sound off); the director's micro cues then keep quiet, so no caption shows twice.
+    this.microCaptions = 'caption' in m;
+    if (this.microCaptions) m.caption = (text, seconds) => this.caption(text, seconds);
+    // Reduced motion: MicroIntro's cuts become the same crossfades as the Garden's (it holds each
+    // framing one frame more and calls onCut, and the veil keeps that frame to fade from).
+    if ('onCut' in m) m.onCut = () => this.veil.capture();
+
+    // Feeding's food and glucose motes are the game's, not the opening's (and until Feeding's first
+    // update its motes' InstancedMesh draws a 1 µm ball at the origin, where the hero lands). They
+    // are settled, hidden, and brought back as the interface arrives in the glide (story shot 7: a
+    // glucose bead drifts close), the food growing in.
+    this.food = this.holdFeeding(feeding);
 
     hud?.show?.(false, 0);
     if (controls) controls.enabled = false;
@@ -749,7 +768,7 @@ export class Intro {
         c.done = true;
         // A MicroIntro that owns its sound plays the micro cues itself; their captions stay here.
         if (!(c.clock === 'micro' && this.microOwnsSound)) c.fn(this);
-        if (c.cap) this.caption(...c.cap);
+        if (c.cap && !(c.clock === 'micro' && this.microCaptions)) this.caption(...c.cap);
       }
     }
   }
@@ -1289,6 +1308,7 @@ export class Intro {
       }
     }
     if (!this.hudShown && (this.tm >= (this.hudAt ?? 17.6) || m.done)) this.showHud();
+    this.stepFeeding();
     this.updateBar();
     if (m.done) this.finish();
   }
@@ -1299,12 +1319,66 @@ export class Intro {
   // sound (shimmer, hiss, rods, wobble) is let down here.
   showHud() {
     this.hudShown = true;
+    this.hudShownAt = this.tm;
     if (!this.microOwnsHud) this.hud?.show?.(true, 1.2);
     if (!this.microOwnsSound) {
       this.audio.chord();
       this.audio.ripple();
-      this.caption('[a held chord]', 2.6);
+      if (!this.microCaptions) this.caption('[a held chord]', 2.6);
     } else this.audio.quiet();
+    this.revealFeeding();
+  }
+
+  // ------------------------------------------------------------------------- Feeding's things
+  // The meshes Feeding shows in the water (its group if it has one; else its own meshes and each
+  // food's mesh), settled by one update at rest and hidden. Returns what was held.
+  holdFeeding(f) {
+    if (!f) return null;
+    try {
+      f.update?.(0, { keys: new Set(), inspect: false });
+    } catch (err) {
+      console.warn('Intro: Feeding.update(0) threw while settling it.', err);
+    }
+    const held = [];
+    const add = (o, grow) => {
+      if (!o?.isObject3D || held.some((h) => h.obj === o)) return;
+      held.push({ obj: o, visible: o.visible, scale: o.scale.clone(), grow });
+    };
+    if (f.group?.isObject3D) add(f.group, false);
+    else {
+      for (const v of Object.values(f)) if (v?.isMesh || v?.isPoints) add(v, false);
+      for (const x of f.food ?? []) add(x?.mesh, true);
+    }
+    for (const h of held) h.obj.visible = false;
+    return { held, at: null };
+  }
+
+  // Brings them back: the motes at once (a fine sprinkle), each food clump growing in over 0.8 s.
+  revealFeeding() {
+    if (!this.food || this.food.at != null) return;
+    this.food.at = this.elapsed;
+    for (const h of this.food.held) {
+      h.obj.visible = h.visible;
+      if (h.grow) h.obj.scale.setScalar(1e-4);
+    }
+  }
+
+  stepFeeding() {
+    const f = this.food;
+    if (!f || f.at == null || f.done) return;
+    const u = smoother((this.elapsed - f.at) / 0.8);
+    for (const h of f.held) if (h.grow) h.obj.scale.copy(h.scale).multiplyScalar(Math.max(u, 1e-4));
+    if (u >= 1) f.done = true;
+  }
+
+  // At the end everything Feeding showed is exactly as it was (the game loop takes it from there).
+  restoreFeeding() {
+    if (!this.food) return;
+    for (const h of this.food.held) {
+      h.obj.visible = h.visible;
+      h.obj.scale.copy(h.scale);
+    }
+    this.food = null;
   }
 
   // --------------------------------------------------------------------------------- skip
@@ -1447,8 +1521,11 @@ export class Intro {
 
   // ------------------------------------------------------------------------ the scale bar
   // The largest power of ten no bigger than 0.3 of the frame's width; its true length on screen.
+  // In the glide it settles onto the HUD's own 1 µm bar (same place, same length) and stays until
+  // the HUD's bar has half faded in, so the stepping bar becomes the game's bar in place.
   updateBar() {
-    const show = this.diveAt != null && this.t >= this.diveAt + 0.6 && this.state !== 'done' && !this.hudShown;
+    const overlap = this.hudShown && this.inMicro && this.tm < (this.hudShownAt ?? 0) + 0.6;
+    const show = this.diveAt != null && this.t >= this.diveAt + 0.6 && this.state !== 'done' && (!this.hudShown || overlap);
     const h = this.frameH; // mm
     if (!show || !(h > 0)) return this.ui.setBar(false);
     const w = h * (innerWidth / innerHeight);
@@ -1458,7 +1535,29 @@ export class Intro {
     if (prev && len < prev && 0.3 * w > 0.85 * prev) len = prev;
     this.barLen = len;
     const label = len >= 10 ? `${len / 10} cm` : len >= 1 ? `${len} mm` : `${Math.round(len * 1000)} µm`;
-    this.ui.setBar(true, label, (len / h) * innerHeight);
+    let px = (len / h) * innerHeight;
+    let x = innerWidth / 2, y = BAR_Y * innerHeight;
+    const m = this.micro;
+    if (this.inMicro && m?.glideAt != null && Math.abs(len - 1e-3) < 1e-9) {
+      const k = smoother((this.tm - m.glideAt) / 1.2);
+      const at = this.hudBarPlace();
+      if (at && k > 0) {
+        x += (at.x - x) * k;
+        y += (at.y - y) * k;
+        px += (at.z - px) * k;
+      }
+    }
+    this.ui.setBar(true, label, px, x, y);
+  }
+
+  // Where the HUD's own 1 µm bar is on screen: (x, y) the middle of its line in CSS px, z its length.
+  // A HUD that says so (barPlace(out)) is asked; otherwise it is read off the vitals ring's layout.
+  hudBarPlace() {
+    const hud = this.hud;
+    if (typeof hud?.barPlace === 'function') return hud.barPlace(_bar);
+    const k = hud?.k, box = hud?.bar?.material?.uniforms?.uBox?.value;
+    if (!k || !box || !(k.upp > 0) || !Number.isFinite(k.cx)) return null;
+    return _bar.set(k.cx, k.cy - box.y / k.upp, 1 / k.upp);
   }
 
   // ------------------------------------------------------------------------------ handoff
@@ -1469,6 +1568,7 @@ export class Intro {
     this.timeScale = 1;
     this.focus = null;
     if (!this.hudShown) this.showHud();
+    this.restoreFeeding();
     if (!this.inMicro) this.enterMicro();
     if (this.controls) this.controls.enabled = true;
     if (this.player && 'enabled' in this.player) this.player.enabled = true;
@@ -1499,6 +1599,7 @@ export class Intro {
     }
     this.micro?.dispose?.();
     this.morning?.dispose?.();
+    this.restoreFeeding();
     this.ui.dispose();
     this.unbindInput();
   }
@@ -1506,6 +1607,7 @@ export class Intro {
 
 const _v2 = new THREE.Vector2();
 const _css = new THREE.Vector2();
+const _bar = new THREE.Vector3();
 const _zero = new THREE.Vector2(0, 0);
 const _a = new THREE.Vector3();
 const _b = new THREE.Vector3();
