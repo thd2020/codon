@@ -231,6 +231,11 @@ function domeMaterial() {
 // ------------------------------------------------------------------------------------------------
 const KIND = { mote: 0, vesicle: 1, glint: 2, bokeh: 3 };
 
+// A rect on screen (NDC: x0, y0, x1, y1) that nothing in front of the subject drifts over, and how
+// strongly (0..1): the title's text, which has to stay legible through the water. The interface sets
+// it each frame (hud.js); the water behind the title still shows through it.
+export const keepClear = { rect: { value: new THREE.Vector4() }, amount: { value: 0 } };
+
 const particleVertex = /* glsl */ `
   attribute float aSize;
   attribute vec4 aSeed;
@@ -240,6 +245,10 @@ const particleVertex = /* glsl */ `
   // The salt front (the dome's own uniforms, shared): motes in tear water are warmer.
   uniform vec3 uSaltN, uSaltCol;
   uniform vec4 uSaltP;
+#ifdef FRONT
+  uniform vec4 uClearRect;
+  uniform float uClear;
+#endif
   varying vec3 vColor;
   varying float vAlpha, vDiam, vSharp, vSeed, vDist, vFlash;
   varying vec2 vSun, vHl;
@@ -331,6 +340,18 @@ const particleVertex = /* glsl */ `
     vHl = normalize(sv + vec3(0.0, 0.0, 1.0)).xy;
     gl_PointSize = diam;
     gl_Position = projectionMatrix * mv;
+#ifdef FRONT
+    // Keep off the title's text (keepClear): a disc that would touch its rect fades out as it drifts
+    // in and back as it drifts clear. Measured in the buffer's pixels, like gl_PointSize.
+    if (uClear > 0.0 && vAlpha > 0.0) {
+      vec2 halfPx = uScale / vec2(projectionMatrix[0][0], projectionMatrix[1][1]);
+      vec2 c = gl_Position.xy / gl_Position.w * halfPx;
+      vec2 lo = uClearRect.xy * halfPx, hi = uClearRect.zw * halfPx;
+      vec2 q = abs(c - 0.5 * (lo + hi)) - 0.5 * (hi - lo);
+      float gap = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - 0.5 * diam;
+      vAlpha *= 1.0 - uClear * (1.0 - smoothstep(0.0, 16.0, gap));
+    }
+#endif
 #if KIND == 3
     // Lens bokeh frames the view from the edges and never veils the subject.
     vec2 ndc = gl_Position.xy / gl_Position.w;
@@ -507,6 +528,7 @@ function particleMaterial({ kind, box, opacity, front }) {
   }
   if (front) {
     Object.assign(uniforms, { tDepth: { value: null }, uRes: { value: new THREE.Vector2(1, 1) }, uNear: { value: 0.1 }, uFar: { value: 1000 }, uOcclude: { value: 0 } });
+    Object.assign(uniforms, { uClearRect: keepClear.rect, uClear: keepClear.amount });
   }
   return new THREE.ShaderMaterial({
     uniforms,

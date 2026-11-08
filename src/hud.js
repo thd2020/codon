@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
 import { BRAND } from './palette.js';
 import { LOOK, sceneColor } from './lens.js';
+import { keepClear } from './water.js';
 
 // The interface lives in the water with the cell, never on the glass. Around the cell: two arcs for
 // its energy (ATP on the left, the proton motive force on the right), a bar exactly 1 µm long at the
@@ -172,6 +173,10 @@ function lightMesh(frag, uniforms) {
       fragmentShader: frag,
       transparent: true,
       depthWrite: false,
+      // Over the small things passing in front (the flagella trailing past as the cell swims, a
+      // bead), as the readouts beside them are, so an arc or the bar never reads as broken. Cells,
+      // drawn after the scene, still veil them.
+      depthTest: false,
     }),
   );
   m.frustumCulled = false;
@@ -1208,6 +1213,29 @@ export class Hud {
     const a = master * near * (1 - this.inspectVis);
     this.plaque.material.uniforms.uOpacity.value = a;
     this.plaque.visible = a > 0.005;
+    this.clearPlaque(camera, this.plaque.visible ? a : 0);
+  }
+
+  // The water's specks in front of the cell keep off the title while it shows (keepClear): its rect
+  // on screen, as far as it reaches, unless part of it is behind the camera.
+  clearPlaque(camera, amount) {
+    const c = keepClear;
+    c.amount.value = 0;
+    if (!(amount > 0)) return;
+    const p = this.plaque;
+    p.updateWorldMatrix(true, false);
+    const hw = PLAQUE.w / PLAQUE.ppu / 2, hh = PLAQUE.h / PLAQUE.ppu / 2;
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (let i = 0; i < 4; i++) {
+      _a.set(i & 1 ? hw : -hw, i & 2 ? hh : -hh, 0).applyMatrix4(p.matrixWorld).project(camera);
+      if (_a.z > 1) return;
+      x0 = Math.min(x0, _a.x);
+      x1 = Math.max(x1, _a.x);
+      y0 = Math.min(y0, _a.y);
+      y1 = Math.max(y1, _a.y);
+    }
+    c.rect.value.set(x0, y0, x1, y1);
+    c.amount.value = amount;
   }
 
   // Take the whole interface out of the scene and the page.
@@ -1219,6 +1247,7 @@ export class Hud {
       root.removeFromParent();
     }
     this.plaque.removeFromParent();
+    keepClear.amount.value = 0;
     for (const m of [this.atpArc, this.pmfArc, this.bar]) m.material.dispose();
     this.plaque.material.uniforms.map.value.dispose();
     this.plaque.material.dispose();
