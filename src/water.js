@@ -73,6 +73,7 @@ const domeFragment = /* glsl */ `
   }
 
   // The caustic net: light focused by the rippling surface into bright, connected, curving threads.
+  // (Codon staging: a still dew drop has no ripples; its curved skin focuses the sun to one region.)
   // Threads are drawn at least ~1.5 px wide (so the net never breaks into wisps) and the whole net
   // gives way to its average where its cells shrink to a few pixels. x: threads, y: their glow.
   vec2 caustic(vec2 uv, float t) {

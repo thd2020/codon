@@ -382,7 +382,9 @@ export class Intro {
     try {
       return !localStorage.getItem(SEEN);
     } catch {
-      return true;
+      // Storage blocked: the flag could never be saved, so playing here would mean playing on every
+      // launch. Such a player can still ask for it with ?intro.
+      return false;
     }
   }
 
@@ -512,7 +514,31 @@ export class Intro {
     else if (!preroll) {
       this.audio.resume();
       this.start();
-    } else this.ui.showPre(true);
+    } else {
+      this.ui.showPre(true);
+      // The pre-roll waits for a click anyway: compile the Garden's and the drop's shaders now, once
+      // it has painted, so they don't stall the reveal (0:04) and the crossing (0:27).
+      setTimeout(() => this.warmUp(), 120);
+    }
+  }
+
+  warmUp() {
+    if (this.state !== 'preroll' || this.disposed) return;
+    const r = this.renderer;
+    try {
+      this.garden.warmUp(r);
+      r.compile(this.scene, this.camera);
+      // CellPass and the other full-screen passes draw no scene of their own: compile their materials
+      // on a throwaway quad.
+      const mats = this.composer.passes.flatMap((p) => [p.material, p.quad?.material, p.composite?.material, p.fsQuad?.material]).filter((m) => m?.isMaterial);
+      const scene = new THREE.Scene();
+      const geo = new THREE.PlaneGeometry(2, 2);
+      for (const m of new Set(mats)) scene.add(new THREE.Mesh(geo, m));
+      r.compile(scene, this.camera);
+      geo.dispose();
+    } catch {
+      /* a failed warm-up only means the shaders compile when first drawn, as before */
+    }
   }
 
   get inGarden() {
@@ -619,6 +645,8 @@ export class Intro {
         // The First Morning (and a blink) is watched, not steered: a scroll there is not saved up for
         // the hub's first frame.
         if (this.state === 'morning' || this.state === 'blink') return;
+        // ...nor is one during the loupe's arrival, before the lens is in your hand (0:08).
+        if (this.state === 'garden' && this.t < T.control) return;
         const dy = e.deltaMode === 1 ? e.deltaY * 33 : e.deltaY;
         this.wheel += clamp(dy, -300, 300);
         if (this.state === 'garden' && this.t >= T.control) this.lastInput = this.t;
@@ -626,6 +654,8 @@ export class Intro {
       keydown: (e) => {
         if (this.state === 'preroll') {
           if (e.code === 'Escape') return; // not a user activation: it could not start the sound
+          // A bare modifier (switching windows, a shortcut) is not "press any key".
+          if (['Shift', 'Control', 'Alt', 'Meta', 'OS', 'CapsLock', 'AltGraph'].includes(e.key) || e.ctrlKey || e.metaKey || e.altKey) return;
           if (e.code === 'KeyC') this.setCaptions(true);
           return this.gesture();
         }

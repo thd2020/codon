@@ -13,7 +13,9 @@ import { METABOLITE } from './palette.js';
 //     pyruvate kinase 1 ATP. Net +2 ATP, +2 NADH, 2 pyruvate.
 //   Pyruvate dehydrogenase: pyruvate -> acetyl-CoA + CO2 + NADH.
 //   TCA cycle in the cytoplasm: per acetyl-CoA 2 CO2, 3 NADH, 1 ATP (succinyl-CoA synthetase) and
-//     1 QH2 made by succinate dehydrogenase, which sits in the inner membrane.
+//     1 QH2 made by succinate dehydrogenase, which sits in the inner membrane. (E. coli's isocitrate
+//     dehydrogenase makes NADPH, not NADH; transhydrogenases swap the two, and the route counts it
+//     as NADH.)
 //   Per glucose: 10 NADH, 2 QH2, 4 ATP at the substrate level, 6 CO2.
 //   NADH -> complex I: 4 H+ out, QH2 -> cytochrome bo3: 4 H+ out, using 1/2 O2. 8 H+ per NADH,
 //     4 per SDH QH2: 88 H+ per glucose. Below 0.25 of air-saturated O2 cytochrome bd takes over
@@ -66,10 +68,14 @@ export const CONFIG = {
   starved: 0.2, // share of that left when no food comes in (the stringent response idles ribosomes)
   wellFed: 0.4, // carbon arriving (glucose/s) for full-speed growth
   chemotaxis: 0.3, // ATP beads/s the receptor array (CheA) uses
+  // Staged thresholds: real E. coli shifts to cytochrome bd nearer 0.1-0.2 of air saturation and
+  // still respires below 0.05; these are set high so the drop's depths show each mode.
   lowOxygen: 0.25, // below this (air-saturated = 1) cytochrome bd takes over
   noOxygen: 0.05, // below this the cell ferments
 };
 
+// Motor power against Δp. Real motor speed rises roughly in proportion to Δp; this curve (nothing
+// below 35 mV, full from 125 mV) is a staged simplification so a fed cell swims at full speed.
 export const motorPowerAt = (pmf) => smooth(35, 125, -pmf);
 // Δp at which ATP synthase is balanced (no net turning): it needs more push the fuller the ATP pool,
 // and much more as ADP runs out near a full pool (past what respiration can reach, so a full cell's
@@ -1730,7 +1736,7 @@ export class Metabolism {
     st.motorPower = motorPowerAt(pmf);
     st.mode = this.mode;
     st.modeNote =
-      this.mode === 'fermentation' ? 'No oxygen: fermenting · ATP synthase runs backwards to hold Δp'
+      this.mode === 'fermentation' ? 'Almost no oxygen: fermenting · ATP synthase runs backwards to hold Δp'
       : this.mode === 'low-oxygen' ? 'Low oxygen: cytochrome bd takes over · fewer H⁺ per NADH'
       : null;
     const M = L.made;

@@ -14,6 +14,7 @@
 6. [How to build it in three.js (`src/intro.js`)](#6-how-to-build-it-in-threejs-srcintrojs)
 7. [Honesty cards](#7-honesty-cards)
 8. [Cuts applied, and what waits for polish](#8-cuts-applied-and-what-waits-for-polish)
+9. [As built (prototype)](#9-as-built-prototype)
 
 ---
 
@@ -1105,3 +1106,35 @@ The opening and the frame must ship with these cards. Each carries one of gamepl
 - Compositing the Micro stage inside the bead before the crossing, a real portal in place of the flash swap.
 - More Memories.
 - The three "next summer" endings (Taken In, Rain, Last), and Phase 4, multicellularity.
+
+---
+
+## 9. As built (prototype)
+
+The first launch (`src/intro.js`, `src/garden.js`, `src/intro-micro.js`) and The First Morning (`src/morning.js`) are built. Where the build departs from the text above, this is what it does and why. The text above is unchanged; read it with these notes.
+
+**First launch (§5.1, shots 0 → 4 → 5 → 6 → 7 → 8)**
+- Timing holds: the lens is in hand at 0:08, the dive starts by itself at 0:17 (sooner on click, W or a trigger), the crossing is at about 0:27 and the game has the cell at about 0:46. The last frame is the game's first: camera, hero, fog, palette, lens and passes all match a fresh start, plus the shed wall left behind in the water.
+- No cube map: the beads refract an analytic dawn sky with the child as a dark silhouette. Dawn has no sun disc yet; the warm glow on the sun's azimuth is the key light.
+- The glass sinks with the eye during the dive, so the swap from the lens view to the eye's view is invisible. The push ends 0.27 mm from the skin (a 0.2 mm frame), where the micro descent begins, and eases out at the push's own pace, so about one second, not two, is spent pressed against the skin.
+- The stepping scale bar is drawn on the page, at its true length on the subject plane; in the glide it settles onto the game's own 1 µm bar.
+- Shot 6: the salt front runs across the view, tear water on the right with the hero 4 µm inside its edge, the mixed water and the walled rods on the left. With the mixed side beyond the hero (as the text has it) the camera would sit inside the band and no gradient would show.
+- The walled rods of shot 6 are ordinary E. coli; every rod in the game is now drawn walled, only the hero is soft.
+- Captions are off by default (C or `?captions` turns them on); every non-speech sound has one. Holding Esc (or B) skips from anywhere, with one blink; reduced motion replaces moves with crossfaded holds.
+- Keys pressed during the opening never reach the game. It plays once; with storage blocked it does not play (it could never remember having played).
+
+**The First Morning (§5.1, shots 0 → 1 → 2 → 3, then the hub)**
+- 33 s on its own clock, then the hub with the lens in hand, as the first launch at 0:08. Skipping lands in the hub.
+- The child sits on the top step framed by a lit glass door, 74 mm below the bead, so the drop shows them dark on warm. The yard is restaged for that (the house 3 m away).
+- Honest optics: the drop and the eye look the same way, so the background blur shows the child too, as a soft dark shape that the drop resolves sharp and upside down. §7's Established card ("the upside-down child in the drop is real optics") holds in that form. Placing the child "just above the frame" would put their image at the edge of the ball lens, tiny and squashed.
+- The push starts at 42 mm (at 55 mm the camera would be outside the 40 mm leaf) and ends at 11 mm. Shot 2's shade is the child's body hiding the yard and the door, not a full-frame darkening, so the tear drops from the dark against the door.
+- Run 2 and later dive from the hub with the 3 s replay dive (§5.3); shot 6's birth is not replayed.
+- The tear's fall, the merge and the ringing use clean water's surface tension; a tear's is a little lower.
+
+**Staging the build adds (to go on the "Where we cheated" page)**
+- The shed wall: in E. coli the wall lies under the outer membrane, so a cell could not leave it behind and keep that membrane. The filmed escape is Bacillus subtilis, which has none. A real E. coli L-form loses its wall in place.
+- The opening's time-lapse runs at ×8 on screen, but the events it shows (rods killed, an L-form born) take hours: about 1000× compressed.
+- The caustic net overhead is ours; a still dew drop has no ripples, and its curved skin focuses the sun to one region.
+- Oxygen falls with depth in the game's drop; a real dew drop stays oxic much deeper and runs short only where cells crowd.
+- The "where we cheated" page itself is not built yet; the cards of §7 do not ship in this prototype.
+

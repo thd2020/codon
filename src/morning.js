@@ -142,7 +142,7 @@ const LEAN_ROOT = new THREE.Vector3(40, 0, -400);
 //
 // The tear's physics runs on world time (story §6.1): the director's time scale is integrated once,
 // ahead, so the tear released 120 mm up lands (about 1.5 m/s) exactly at contact whatever the frame
-// rate, and the bead rings on Lamb's decay times. Rayleigh's frequencies for a free drop of 2.15 mm,
+// rate, and the bead rings on Lamb's decay times. Rayleigh's frequencies for a free drop of 2.15 mm of clean water (a tear lowers sigma a little),
 // omega_l^2 = l(l-1)(l+2) sigma/(rho R^3), give 240 and 466 rad/s for l = 2, 3; their decay times
 // R^2/((l-1)(2l+1) nu) about 0.9 and 0.33 s. At full speed the modes would be a shimmer, so they are
 // let down as time returns (Codon staging, story §7: 'High-speed camera').

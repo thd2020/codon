@@ -25,7 +25,7 @@ export class Player {
     this.bundle = 0.6;
     this.motorPower = 1; // 0..1, from the metabolism's proton motive force
     this.requested = 0; // thrust asked of the motors this frame, before motorPower
-    this.maxSpeed = 7; // µm/s, a relaxed E. coli pace
+    this.maxSpeed = 7; // µm/s: about a quarter of a free E. coli's 20-30 µm/s (staging, so it can be steered)
     this.tumble = 0;
     this.tumbleAxis = new THREE.Vector3(1, 0, 0);
     this.spinRate = 0;
@@ -33,8 +33,12 @@ export class Player {
     this.rise = 0; // 0..1: how far the camera has risen over a cell whose tail points at it
     this.started = false;
     this.inspect = false;
+    // False while the opening owns the input (intro.js sets it): no key reaches the cell then, so a
+    // Tab or F pressed in the garden does not wait to fire on the game's first frame.
+    this.enabled = true;
 
     addEventListener('keydown', (e) => {
+      if (!this.enabled) return;
       if (e.code === 'Tab') {
         e.preventDefault();
         if (!e.repeat) this.inspect = !this.inspect;

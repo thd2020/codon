@@ -113,9 +113,53 @@ const maxFrames = +params.get('frames') || Infinity;
 let frames = 0;
 const timer = new THREE.Timer();
 let t = 0;
+
+// Frame-time governor for play. Every cell is ray-marched at the full drawing-buffer resolution,
+// which a mid-range GPU at devicePixelRatio 2 cannot always hold at 60 fps. Measured over a few
+// seconds, slow frames first lower CellPass's march quality, then the resolution it renders at
+// (it is composited back at full size); fast frames bring them back one step at a time. The
+// opening runs its own governor, and headless ?frames renders keep full quality.
+const GOVERN = [
+  { quality: 1, scale: 1 },
+  { quality: 0.8, scale: 1 },
+  { quality: 0.8, scale: 0.8 },
+  { quality: 0.65, scale: 0.7 },
+  { quality: 0.5, scale: 0.6 },
+];
+const governor = { level: 0, ema: 1 / 60, wait: 2 };
+function govern(raw) {
+  if (maxFrames < Infinity || intro?.active || !(raw > 0) || raw > 0.5) return; // a hidden tab's gap is not a slow frame
+  governor.ema += (raw - governor.ema) * 0.05;
+  governor.wait -= raw;
+  if (governor.wait > 0) return;
+  let next = governor.level;
+  if (governor.ema > 1 / 45 && next < GOVERN.length - 1) next++;
+  else if (governor.ema < 1 / 57 && next > 0) next--;
+  if (next === governor.level) return;
+  // after a step down, 2 s before the next judgement; after a step back up, 4 s, so it does not hunt
+  governor.wait = next > governor.level ? 2 : 4;
+  governor.level = next;
+  applyLevel(next);
+}
+function applyLevel(level) {
+  cellPass.quality = GOVERN[level].quality;
+  if (cellPass.resolutionScale !== GOVERN[level].scale) {
+    cellPass.resolutionScale = GOVERN[level].scale;
+    renderer.getDrawingBufferSize(size);
+    cellPass.setSize(size.x, size.y);
+  }
+}
+// ?govern=N starts at governor level N (0-4), to see what a slow GPU gets.
+if (params.has('govern')) {
+  governor.level = Math.min(Math.max(Math.round(+params.get('govern')) || 0, 0), GOVERN.length - 1);
+  applyLevel(governor.level);
+}
+
 function frame(now) {
   timer.update(now);
-  const real = maxFrames < Infinity ? 1 / 60 : Math.min(timer.getDelta(), 1 / 20);
+  const raw = timer.getDelta();
+  govern(raw);
+  const real = maxFrames < Infinity ? 1 / 60 : Math.min(raw, 1 / 20);
   if (++frames >= maxFrames) renderer.setAnimationLoop(null);
   window.__frames = frames;
   // World time runs at the opening's pace while it plays (slow motion, the time-lapse); inspect's
@@ -153,4 +197,4 @@ function frame(now) {
 }
 renderer.setAnimationLoop(frame);
 
-window.codon = { scene, camera, hero, player, controls, metabolism, feeding, cellPass, renderer, intro };
+window.codon = { scene, camera, hero, player, controls, metabolism, feeding, cellPass, renderer, intro, governor };

@@ -16,7 +16,8 @@ import { METABOLITE } from './palette.js';
 // where the cell has emptied it, motes diffuse back in from the patch's far side. The
 // chemoreceptors at the front pole flash when the sugar rises.
 //
-// Oxygen comes from the drop's surface: 1 at y >= 0, falling to ~0 by y = -30 µm.
+// Oxygen: 1 at y >= 0, falling to ~0 by y = -30 µm. Codon staging: a real dew drop stays oxic far
+// deeper than this; it runs short only where many cells crowd and respire (gameplay §4.1).
 //
 // Food particles: coral protein clumps (digested to amino acids) and champagne glycogen fragments
 // (digested to glucose), soft opaque lumps drifting in the water. Real E. coli can't eat them; this
@@ -128,7 +129,7 @@ const PROTEIN_FOOD = (() => {
 const POCKET_TITLE = 'Endocytic pocket';
 const POCKET_SUB = 'the membrane folds in round the particle · its neck will close and pinch off a vesicle';
 const VESICLE_TITLE = 'Endocytic vesicle';
-const VESICLE_SUB = 'E. coli can’t do this. The planctomycete Gemmata obscuriglobus takes up proteins in a similar way; here it is a trait this wall-less cell has evolved.';
+const VESICLE_SUB = 'E. coli can’t do this. Wall-less L-forms of Kitasatospora take up DNA and small particles this way (Kapteijn et al. 2022); here it is a trait this wall-less cell has evolved.';
 
 const params = typeof location !== 'undefined' ? new URLSearchParams(location.search) : new URLSearchParams();
 const OXYGEN = params.has('oxygen') ? +params.get('oxygen') : null;
@@ -1430,7 +1431,7 @@ export class Feeding {
     this.syncCamera();
     const g = hero.group.position;
 
-    // Oxygen diffuses in from the drop's surface and is used up on the way down.
+    // Oxygen by depth alone: staged (see the note at the top of this file).
     this.state.oxygen = OXYGEN ?? (g.y >= 0 ? 1 : 1 - THREE.MathUtils.smoothstep(-g.y, 0, 30));
 
     // Glucose round the cell; the receptors light up when it is rising (the cell tastes the change,

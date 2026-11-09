@@ -27,9 +27,10 @@ export { CELL_KIND };
 //   ribosomes: ~1.4x;
 //   flagella: true size (20 nm thick, a 2.3 µm pitch helix 0.4 µm across).
 //
-// The respiratory complexes and ATP synthase gather in a few mobile patches of membrane, as they do
-// in E. coli (Lenn et al. 2008; Llorente-Garcia et al. 2014), and the glucose transporters in two
-// more. CellPass draws each patch as a thicker, differently coloured raft of inner membrane, so
+// The respiratory complexes and ATP synthase gather in a few mobile patches of membrane (in E. coli
+// each kind gathers in its own mobile islands, and different kinds do not co-localise: Lenn et al.
+// 2008; Llorente-Garcia et al. 2014; mixing them in one patch, so one circuit can be followed, is
+// Codon staging), and the glucose transporters in two more. CellPass draws each patch as a thicker, differently coloured raft of inner membrane, so
 // the complexes visibly sit in the membrane.
 //
 // Everything is placed in REFERENCE body space (capsule R = 0.5, core half-length H = 0.5 along +Z,
@@ -862,11 +863,11 @@ export class Bacterium {
     this.anchor('glycogen', 'Glycogen granule', 'glucose stored for later', at(vol.granules[0].pos.clone()), { angle: -150, len: 80, interior: true });
     this.anchor('polyP', 'Polyphosphate granule', 'a store of phosphate and energy', at(vol.granules[2].pos.clone()), { angle: 30, len: 80, interior: true });
     this.anchor('atpSynthase', 'ATP synthase', '10 H+ turn the rotor once · 3 ATP', at(atp.inner.clone()), { angle: 20, len: 100, interior: true });
-    this.anchor('glycolysis', 'Glycolysis', 'nine enzymes · glucose-6-P to 2 pyruvate · +2 ATP, +2 NADH', at(glycolysisEnzymes[4].pos.clone()), { angle: 150, len: 90, interior: true });
-    this.anchor('tca', 'TCA cycle', 'seven enzymes here, the eighth (SDH) in the membrane · 3 NADH, 1 QH2, 1 ATP per turn', at(tcaCentre.clone()), { angle: -160, len: 90, interior: true });
+    this.anchor('glycolysis', 'Glycolysis', 'nine enzymes · glucose to 2 pyruvate (one PEP pays for the sugar’s uptake) · net +2 ATP, +2 NADH', at(glycolysisEnzymes[4].pos.clone()), { angle: 150, len: 90, interior: true });
+    this.anchor('tca', 'TCA cycle', 'seven enzymes here, the eighth (SDH) in the membrane · 2 NADH + 1 NADPH (counted as NADH), 1 QH2, 1 ATP per turn', at(tcaCentre.clone()), { angle: -160, len: 90, interior: true });
     const f = this.flagella[0];
     if (f) {
-      this.anchor('motor', 'Flagellar motor', 'runs on the proton gradient · ~100 rev/s', f.motor, { angle: -150, len: 70 });
+      this.anchor('motor', 'Flagellar motor', this.hero ? 'runs on the proton gradient · with no wall to brace on, a real one could barely grip (Codon staging)' : 'runs on the proton gradient · ~100 rev/s', f.motor, { angle: -150, len: 70 });
       this.anchor('flagellum', 'Flagellum', 'flagellin helix · 20 nm thick', f.tip, { angle: -35, len: 60 });
     }
   }
@@ -1042,6 +1043,10 @@ export class Bacterium {
 // with nothing inside. It starts exactly where `of` is (same world transform, just outside its outer
 // membrane). Add `group` to the scene and the husk itself to CellPass; `wall` is how present it is
 // (0..1), `split` how far open its slit is (along its +y side). Call update() each frame.
+// Codon staging: in E. coli the wall lies under the outer membrane, in the periplasm, so a real cell
+// could not leave its sacculus behind outside itself and keep that membrane. Wall-deficient cells
+// filmed escaping a split wall are Bacillus subtilis, which has no outer membrane. A real E. coli
+// L-form loses its wall in place.
 export function createHusk(of, { tint = 0xf1f1e6, seed = 7 } = {}) {
   const group = new THREE.Group();
   of.body.updateWorldMatrix(true, false);

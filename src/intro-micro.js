@@ -14,7 +14,7 @@ import { LOOK, DAWN, lerpDrop, applyDrop, lerpHex, sceneColor } from './lens.js'
 //           salt front lies across the view, the right of the frame brighter and warmer.
 //   3-17 s  (0:30-0:44) the soft one. Walled rods run and tumble in the mixed water left of one rod
 //           at the front's edge; the long one, close to the lens, pinches in two (4.5-6.8 s).
-//           6-12 s is an honest time-lapse (x8): the light warms from dawn-lilac to the morning,
+//           6-12 s is a time-lapse (x8; the events themselves are ~1000x compressed: Codon staging): the light warms from dawn-lilac to the morning,
 //           the rods slow, swell, round up and go hypodense; the rod at the edge slows, its wall
 //           splits along one side (seen three-quarter on), a soft cell squeezes out, rounds up,
 //           trembles, and its insides bloom into the hero's colours while the empty wall turns

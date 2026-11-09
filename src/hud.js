@@ -777,7 +777,7 @@ export class Hud {
     const mode = typeof m.mode === 'string' ? m.mode : 'respiration';
     let text = typeof m.modeNote === 'string' && m.modeNote ? m.modeNote : null;
     let tone = mode === 'fermentation' ? 'ferment' : 'low';
-    if (!text && mode === 'fermentation') text = 'No oxygen: fermenting · ATP synthase runs backwards to hold Δp';
+    if (!text && mode === 'fermentation') text = 'Almost no oxygen: fermenting · ATP synthase runs backwards to hold Δp';
     if (!text && mode === 'low-oxygen') text = 'Low oxygen: cytochrome bd takes over · fewer H⁺ per NADH';
     let act = text && (mode === 'fermentation' || mode === 'low-oxygen') ? '<kbd>Space</kbd>rise toward the surface' : '';
     if (!text && num(m.motorPower) !== null && m.motorPower < 0.55 && mode === 'respiration') {
@@ -805,7 +805,7 @@ export class Hud {
         [['glc', 'glucose in', 'beads/min'], ['atp', 'ATP made', 'beads/s'], ['o2', 'O₂ here', '% air sat.'], ['co2', 'CO₂ out', 'beads']]
           .map(([key, k, unit]) => `<div class="row"><span class="k">${k}</span><span class="v" data-v="${key}">–</span><span class="u">${unit}</span></div>`)
           .join('') +
-        '<div class="foot">1 bead ≈ 10⁴ molecules</div>',
+        '<div class="foot">1 bead ≈ 10⁴ molecules · the clock runs slow, and swimming costs more than in life</div>',
     );
     this.ledgerValues = {};
     for (const e of this.ledger.inner.querySelectorAll('[data-v]')) this.ledgerValues[e.dataset.v] = { e, text: '–' };
